@@ -20,6 +20,7 @@ export interface Investigation {
   label: string
   message_source: 'model' | 'template'
   latency_ms: number
+  replayed?: boolean
   tool_calls: { name: string; args: Record<string, unknown> }[]
   error: string | null
 }
@@ -86,6 +87,8 @@ export interface Metrics {
 export interface Health {
   llm: LlmStatus
   llm_available: boolean
+  safe_mode: boolean
+  cached_results: number
   rules: { simple: string[]; tight: string[] }
   seed: number
   thresholds: Record<string, number>
@@ -194,6 +197,7 @@ export const api = {
   health: () => req<Health>('/api/health'),
   copy: () => req<{ copy: Copy; hold_minutes: number }>('/api/copy'),
   control: (action: string, speed?: number) => req('/api/stream/control', postJson({ action, speed })),
+  safeMode: (enabled: boolean) => req<{ enabled: boolean; cached_results: number }>('/api/safe-mode', postJson({ enabled })),
   setLang: (lang: Lang) => req(`/api/lang/${lang}`, post),
   investigate: (id: string, lang: Lang) => req<InvestigationReply>(`/api/investigate/${id}?lang=${lang}`, post),
   graph: (id: string) => req<EgoGraph>(`/api/graph/${id}`),

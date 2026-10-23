@@ -26,6 +26,7 @@ export default function App() {
   const [flash, setFlash] = useState(0)
   const [llm, setLlm] = useState<LlmStatus | null>(null)
   const [pending, setPending] = useState<Record<string, number>>({})
+  const [safe, setSafe] = useState<{ enabled: boolean; cached_results: number }>({ enabled: false, cached_results: 0 })
   const lastTrip = useRef(0)
   const pinnedRef = useRef(pinned)
   pinnedRef.current = pinned
@@ -37,7 +38,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    api.health().then((h) => { setHealth(h); setLlm(h.llm) }).catch(() => setHealth(null))
+    api.health().then((h) => { setHealth(h); setLlm(h.llm); setSafe({ enabled: h.safe_mode, cached_results: h.cached_results }) }).catch(() => setHealth(null))
     api.copy().then(setCopy).catch(() => setCopy(null))
   }, [])
 
@@ -89,6 +90,8 @@ export default function App() {
           if (msg.status) setLlm(msg.status)
         } else if (msg.type === 'llm_status') {
           setLlm(msg.status)
+        } else if (msg.type === 'safe_mode') {
+          setSafe({ enabled: msg.enabled, cached_results: msg.cached_results })
         }
       }
     }
@@ -161,6 +164,14 @@ export default function App() {
             ))}
           </div>
           <button className="btn" onClick={() => control('reset')}>Reset</button>
+          <button
+            className="btn"
+            aria-pressed={safe.enabled}
+            title="Replays cached real model outputs (labels kept) and never waits on the model. Payments without a cached output get the labelled template."
+            onClick={() => api.safeMode(!safe.enabled).then(setSafe).catch(() => undefined)}
+          >
+            Safe mode {safe.enabled ? `on · ${safe.cached_results} cached` : 'off'}
+          </button>
           {pinned && <button className="btn" onClick={() => setPinned(false)}>Follow live</button>}
         </div>
       </motion.header>
