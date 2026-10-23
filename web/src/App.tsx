@@ -34,6 +34,7 @@ export default function App() {
   const [lang, setLangState] = useState<Lang>('en')
   const [tab, setTab] = useState<Tab>('stream')
   const [connected, setConnected] = useState(false)
+  const [everConnected, setEverConnected] = useState(false)
   const [tripSignal, setTripSignal] = useState(0)
   const [flash, setFlash] = useState(0)
   const [llm, setLlm] = useState<LlmStatus | null>(null)
@@ -85,13 +86,22 @@ export default function App() {
     let closed = false
     const connect = () => {
       ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`)
-      ws.onopen = () => setConnected(true)
+      ws.onopen = () => {
+        setConnected(true)
+        setEverConnected(true)
+        api.health().then((h) => { setHealth(h); setLlm(h.llm); setSafe({ enabled: h.safe_mode, cached_results: h.cached_results }) }).catch(() => undefined)
+      }
       ws.onclose = () => {
         setConnected(false)
         if (!closed) retry = window.setTimeout(connect, 1000)
       }
       ws.onmessage = (ev) => {
-        const msg = JSON.parse(ev.data)
+        let msg
+        try {
+          msg = JSON.parse(ev.data)
+        } catch {
+          return
+        }
         if (msg.metrics) setMetrics(msg.metrics)
         if (msg.type === 'batch') {
           const batch: Txn[] = msg.txns
@@ -129,13 +139,21 @@ export default function App() {
   }
 
   const control = async (action: string, speed?: number) => {
-    await api.control(action, speed)
+    try {
+      await api.control(action, speed)
+    } catch {
+      return
+    }
     if (action === 'reset') {
       setTxns([])
       setSelected(null)
       setPinned(false)
     }
-    setMetrics(await fetch('/api/metrics').then((r) => r.json()))
+    try {
+      setMetrics(await fetch('/api/metrics').then((r) => r.json()))
+    } catch {
+      /* the WebSocket lamp already shows the connection state */
+    }
   }
 
   const select = (t: Txn) => {
@@ -297,13 +315,13 @@ export default function App() {
           <small>UPI fraud protection</small>
         </div>
         <div className="lamps" aria-live="polite">
-          <span className={`lamp ${connected && stream?.running ? 'on' : 'amber'}`}><i />
-            {connected ? (stream?.running ? 'live' : 'paused') : 'connecting'} <b>{stream?.clock ?? '—'}</b>
+          <span className={`lamp ${connected && stream?.running ? 'on' : connected ? 'amber' : 'trip'}`}><i />
+            {connected ? (stream?.running ? 'live' : 'paused') : everConnected ? 'connection lost · retrying' : 'connecting'} <b>{stream?.clock ?? '—'}</b>
           </span>
           <span className={`lamp ${llm?.state === 'ready' ? 'on' : 'amber'}`} title="Investigator provider, model, mode and last latency"><i />
             gemma <b>{!llm ? '—' : llm.state === 'loading' ? 'loading…' : llm.provider
               ? `${llm.model} · ${llm.provider}${llm.mode ? ` · ${llm.mode.replace('_', ' ')}` : ''}${llm.last_latency_ms != null ? ` · ${(llm.last_latency_ms / 1000).toFixed(1)} s` : ''} · ${llm.state}`
-              : 'offline · templates'}</b>
+              : 'offline · templates'}{llm && llm.state !== 'ready' && llm.state !== 'loading' && llm.error ? ` · ${llm.error}` : ''}</b>
           </span>
           {stream && <span className="lamp"><i />replay <b>{stream.cursor.toLocaleString('en-IN')} / {stream.total.toLocaleString('en-IN')}</b></span>}
         </div>

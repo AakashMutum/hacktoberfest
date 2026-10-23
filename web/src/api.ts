@@ -30,7 +30,8 @@ export interface LlmStatus {
   provider: string | null
   model: string | null
   mode: string | null
-  state: 'ready' | 'loading' | 'offline'
+  state: 'ready' | 'loading' | 'offline' | 'slow' | 'busy' | 'error'
+  error?: string | null
   last_latency_ms: number | null
 }
 
@@ -177,12 +178,20 @@ export interface ScanResult {
 
 export type Copy = Record<Lang, Record<string, string>>
 
+export const SERVER_DOWN = 'The Circuit Breaker server is not reachable. It may be restarting; try again in a moment.'
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(path, init)
+  let r: Response
+  try {
+    r = await fetch(path, { ...init, signal: init?.signal ?? AbortSignal.timeout(90_000) })
+  } catch {
+    throw new Error(SERVER_DOWN)
+  }
   if (!r.ok) {
-    let detail = r.statusText
+    let detail = r.status >= 500 && r.status !== 503 && r.status !== 504 ? 'The server hit an error. Try again.' : r.statusText
     try {
-      detail = (await r.json()).detail ?? detail
+      const body = await r.json()
+      if (typeof body.detail === 'string') detail = body.detail
     } catch {
       /* body was not JSON */
     }

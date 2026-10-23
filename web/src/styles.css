@@ -67,6 +67,8 @@ button { font: inherit; color: inherit; }
 .lamp i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 2px rgba(0,0,0,.4); }
 .lamp.on i { background: var(--pass); box-shadow: 0 0 8px var(--pass); }
 .lamp.amber i { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.lamp.trip i { background: var(--trip); box-shadow: 0 0 8px var(--trip); }
+.lamp.trip { color: var(--trip); }
 .lamp b { color: var(--paper); font-weight: 500; }
 .controls { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
