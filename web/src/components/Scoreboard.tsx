@@ -43,6 +43,16 @@ export function Scoreboard({ m, rules }: { m: Metrics | null; rules: { simple: s
         <h2>Breaker vs Rules</h2>
         <span className="meta">{cb.seen.toLocaleString('en-IN')} payments · {cb.fraud_seen} fraud seen</span>
       </header>
+      <div className="impact" aria-live="polite">
+        <div>
+          <span className="impact-lbl">₹ protected</span>
+          <span className="impact-num c-pass">{inrShort(cb.rupees_saved)}</span>
+        </div>
+        <span className="impact-sub">
+          Fraud amount stopped by a hold or block in this session, out of {inrShort(cb.fraud_amount)} attempted.
+          Rules A {inrShort(m.rules_engine.rupees_saved)}, Rules B {inrShort(m.rules_tight.rupees_saved)}, with {m.rules_engine.legit_blocked} and {m.rules_tight.legit_blocked} genuine payments blocked against {cb.legit_blocked}.
+        </span>
+      </div>
       <div className="score" role="table">
         <div role="columnheader" />
         <div role="columnheader" className="h c-pass">Circuit Breaker</div>
