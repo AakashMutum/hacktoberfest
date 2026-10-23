@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, type Copy, type Health, type Investigation, type Lang, type Metrics, type Txn } from './api'
+import { api, type Copy, type Health, type Investigation, type Lang, type LlmStatus, type Metrics, type Txn } from './api'
 import { Graph } from './components/Graph'
 import { Phone } from './components/Phone'
 import { Rail } from './components/Rail'
@@ -24,6 +24,8 @@ export default function App() {
   const [connected, setConnected] = useState(false)
   const [tripSignal, setTripSignal] = useState(0)
   const [flash, setFlash] = useState(0)
+  const [llm, setLlm] = useState<LlmStatus | null>(null)
+  const [pending, setPending] = useState<Record<string, number>>({})
   const lastTrip = useRef(0)
   const pinnedRef = useRef(pinned)
   pinnedRef.current = pinned
@@ -35,7 +37,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setHealth(null))
+    api.health().then((h) => { setHealth(h); setLlm(h.llm) }).catch(() => setHealth(null))
     api.copy().then(setCopy).catch(() => setCopy(null))
   }, [])
 
@@ -43,7 +45,18 @@ export default function App() {
     const patch = (t: Txn) => (t.txn_id === id ? { ...t, investigations: { ...t.investigations, [l]: inv } } : t)
     setTxns((list) => list.map(patch))
     setSelected((s) => (s ? patch(s) : s))
+    setPending((p) => {
+      const next = { ...p }
+      delete next[`${id}|${l}`]
+      return next
+    })
   }, [])
+
+  const requestInvestigation = useCallback(async (id: string, l: Lang) => {
+    const reply = await api.investigate(id, l)
+    if (reply.status === 'done') applyInvestigation(id, l, reply.result)
+    else setPending((p) => ({ ...p, [`${id}|${l}`]: reply.since * 1000 }))
+  }, [applyInvestigation])
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -73,6 +86,9 @@ export default function App() {
           }
         } else if (msg.type === 'investigation') {
           applyInvestigation(msg.txn_id, msg.lang, msg.result)
+          if (msg.status) setLlm(msg.status)
+        } else if (msg.type === 'llm_status') {
+          setLlm(msg.status)
         }
       }
     }
@@ -128,8 +144,10 @@ export default function App() {
           <span className={`lamp ${connected && stream?.running ? 'on' : 'amber'}`}><i />
             {connected ? (stream?.running ? 'live' : 'paused') : 'connecting'} <b>{stream?.clock ?? '—'}</b>
           </span>
-          <span className={`lamp ${health?.llm_available ? 'on' : 'amber'}`}><i />
-            investigator <b>{health ? (health.llm_available ? `${health.model} · ${health.provider}` : 'fallback templates') : '—'}</b>
+          <span className={`lamp ${llm?.state === 'ready' ? 'on' : 'amber'}`} title="Investigator provider, model, mode and last latency"><i />
+            gemma <b>{!llm ? '—' : llm.state === 'loading' ? 'loading…' : llm.provider
+              ? `${llm.model} · ${llm.provider}${llm.mode ? ` · ${llm.mode.replace('_', ' ')}` : ''}${llm.last_latency_ms != null ? ` · ${(llm.last_latency_ms / 1000).toFixed(1)} s` : ''} · ${llm.state}`
+              : 'offline · templates'}</b>
           </span>
           {stream && <span className="lamp"><i />replay <b>{stream.cursor.toLocaleString('en-IN')} / {stream.total.toLocaleString('en-IN')}</b></span>}
         </div>
@@ -154,25 +172,25 @@ export default function App() {
         variants={{ hidden: {}, show: { transition: { staggerChildren: reduce ? 0 : 0.12, delayChildren: 0.1 } } }}
       >
         <motion.div variants={item} className={`col ${tab === 'stream' ? 'active' : ''}`} id="panel-stream" role="tabpanel">
-          <Rail txns={txns} selectedId={selected?.txn_id ?? null} onSelect={select} lang={lang} tripSignal={tripSignal} frozen={frozen} onFreeze={onFreeze} onInvestigated={applyInvestigation} />
+          <Rail txns={txns} selectedId={selected?.txn_id ?? null} onSelect={select} lang={lang} tripSignal={tripSignal} frozen={frozen} onFreeze={onFreeze} pending={pending} onInvestigate={requestInvestigation} />
         </motion.div>
         <motion.div variants={item} className={`col center ${tab === 'graph' || tab === 'score' ? 'active' : ''}`} data-tab={tab}>
           <div className={`slot slot-graph ${tab === 'score' ? 'hide-mobile' : ''}`}>
             <Graph txn={selected} />
           </div>
           <div className={tab === 'graph' ? 'hide-mobile' : ''}>
-            <Scoreboard m={metrics} />
+            <Scoreboard m={metrics} rules={health?.rules ?? null} />
           </div>
         </motion.div>
         <motion.div variants={item} className={`col scroll ${tab === 'phone' || tab === 'score' ? 'active' : ''}`} data-tab={tab}>
           <div className={tab === 'score' ? 'hide-mobile' : ''}>
-            <Phone txn={selected} lang={lang} setLang={setLang} copy={copy?.copy ?? null} holdMinutes={copy?.hold_minutes ?? 30} onInvestigated={applyInvestigation} />
+            <Phone txn={selected} lang={lang} setLang={setLang} copy={copy?.copy ?? null} holdMinutes={copy?.hold_minutes ?? 30} pendingSince={selected ? pending[`${selected.txn_id}|${lang}`] : undefined} onInvestigate={requestInvestigation} />
           </div>
           <div className={tab === 'phone' ? 'hide-mobile' : ''}>
             <RedTeam />
           </div>
           <div className={tab === 'phone' ? 'hide-mobile' : ''}>
-            <Scan lang={lang} llmAvailable={!!health?.llm_available} />
+            <Scan lang={lang} llmAvailable={llm?.state === 'ready'} />
           </div>
         </motion.div>
       </motion.main>

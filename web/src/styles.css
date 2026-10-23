@@ -167,7 +167,14 @@ button { font: inherit; color: inherit; }
 .src { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
 
 /* scoreboard */
-.score { display: grid; grid-template-columns: minmax(130px, 1.1fr) 1fr 1fr; }
+.score { display: grid; grid-template-columns: minmax(120px, 1.1fr) 1fr 1fr 1fr; }
+.rules-head { position: relative; cursor: help; text-decoration: underline dotted; text-underline-offset: 4px; }
+.rules-head .tooltip {
+  display: none; position: absolute; right: 0; top: 100%; z-index: 10; width: 280px; padding: 10px 12px;
+  background: var(--ink); border: 1px solid var(--muted); color: var(--paper);
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0; text-transform: none; font-weight: 400;
+}
+.rules-head:hover .tooltip, .rules-head:focus .tooltip { display: block; }
 .score > div { padding: 9px 12px; border-bottom: 1px solid var(--line); }
 .score .h { font-family: var(--display); font-weight: 700; font-size: 15px; letter-spacing: 0.08em; text-transform: uppercase; }
 .score .lbl { color: var(--muted); font-size: 11px; }
@@ -254,7 +261,9 @@ footer.foot { padding: 6px 16px 8px; color: var(--muted); font-size: 11px; borde
   .brand h1 { font-size: 24px; }
   .brand small { display: none; }
   .lamps { gap: 4px 12px; font-size: 10px; }
-  .score .num { font-size: 17px; }
+  .score .num { font-size: 15px; }
+  .score { grid-template-columns: 88px 1fr 1fr 1fr; }
+  .rules-head .tooltip { width: 220px; }
   .score > div { padding: 8px; }
   .controls { margin-left: 0; width: 100%; }
   .tabs {

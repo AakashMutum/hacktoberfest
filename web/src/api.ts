@@ -13,11 +13,26 @@ export interface Investigation {
   reason: string
   customer_message: string
   analyst_note: string
-  source: 'gemma' | 'fallback'
+  source: 'model' | 'fallback'
+  provider: string | null
   model: string | null
+  mode: 'function_calling' | 'context_injection' | null
+  label: string
+  message_source: 'model' | 'template'
+  latency_ms: number
   tool_calls: { name: string; args: Record<string, unknown> }[]
   error: string | null
 }
+
+export interface LlmStatus {
+  provider: string | null
+  model: string | null
+  mode: string | null
+  state: 'ready' | 'loading' | 'offline'
+  last_latency_ms: number | null
+}
+
+export type InvestigationReply = { status: 'done'; result: Investigation } | { status: 'pending'; since: number }
 
 export interface Txn {
   txn_id: string
@@ -35,6 +50,8 @@ export interface Txn {
   factors: Factor[]
   rules_blocked: boolean
   rules_fired: string[]
+  tight_blocked: boolean
+  tight_fired: string[]
   cb_ms: number
   rules_ms: number
   is_fraud: boolean
@@ -61,14 +78,15 @@ export interface SystemStats {
 export interface Metrics {
   circuit_breaker: SystemStats
   rules_engine: SystemStats
+  rules_tight: SystemStats
   stream: { cursor: number; total: number; running: boolean; speed: number; clock: string; pending_injected: number }
   model: { version: number; trained_on: number; base_auc_typologies_1_4: number; features: number }
 }
 
 export interface Health {
-  provider: string
-  model: string
+  llm: LlmStatus
   llm_available: boolean
+  rules: { simple: string[]; tight: string[] }
   seed: number
   thresholds: Record<string, number>
   hold_minutes: number
@@ -111,6 +129,8 @@ export interface AttackResult {
   cb_rate: number
   rules_detected: number
   rules_rate: number
+  tight_detected: number
+  tight_rate: number
   nudged: number
 }
 
@@ -120,6 +140,8 @@ export interface DetectStats {
   rate: number
   rules_detected: number
   rules_rate: number
+  tight_detected: number
+  tight_rate: number
 }
 
 export interface AdaptResult {
@@ -144,6 +166,9 @@ export interface ScanResult {
   risk_contribution: number
   summary: string
   model: string
+  provider: string
+  label: string
+  latency_ms: number
 }
 
 export type Copy = Record<Lang, Record<string, string>>
@@ -170,7 +195,7 @@ export const api = {
   copy: () => req<{ copy: Copy; hold_minutes: number }>('/api/copy'),
   control: (action: string, speed?: number) => req('/api/stream/control', postJson({ action, speed })),
   setLang: (lang: Lang) => req(`/api/lang/${lang}`, post),
-  investigate: (id: string, lang: Lang) => req<Investigation>(`/api/investigate/${id}?lang=${lang}`, post),
+  investigate: (id: string, lang: Lang) => req<InvestigationReply>(`/api/investigate/${id}?lang=${lang}`, post),
   graph: (id: string) => req<EgoGraph>(`/api/graph/${id}`),
   attack: () => req<AttackResult>('/api/redteam/attack', post),
   adapt: () => req<AdaptResult>('/api/redteam/adapt', post),

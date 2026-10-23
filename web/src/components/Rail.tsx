@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useAnimationControls, useReducedMotion } from 'framer-motion'
 import { useEffect, useState } from 'react'
-import { api, inr, shortVpa, type Investigation, type Lang, type Txn } from '../api'
+import { inr, shortVpa, type Lang, type Txn } from '../api'
 
 interface Props {
   txns: Txn[]
@@ -10,12 +10,13 @@ interface Props {
   tripSignal: number
   frozen: boolean
   onFreeze: (frozen: boolean) => void
-  onInvestigated: (id: string, lang: Lang, inv: Investigation) => void
+  pending: Record<string, number>
+  onInvestigate: (id: string, lang: Lang) => Promise<void>
 }
 
 const ACTION_LABEL = { allow: 'Pass', nudge: 'Nudge', hold: 'Hold', block: 'Trip' } as const
 
-export function Rail({ txns, selectedId, onSelect, lang, tripSignal, frozen, onFreeze, onInvestigated }: Props) {
+export function Rail({ txns, selectedId, onSelect, lang, tripSignal, frozen, onFreeze, pending, onInvestigate }: Props) {
   const reduce = useReducedMotion()
   const lever = useAnimationControls()
   const panel = useAnimationControls()
@@ -68,7 +69,8 @@ export function Rail({ txns, selectedId, onSelect, lang, tripSignal, frozen, onF
                 onSelect(t)
                 setExpanded(expanded === t.txn_id ? null : t.txn_id)
               }}
-              onInvestigated={onInvestigated}
+              pendingSince={pending[`${t.txn_id}|${lang}`] ?? pending[`${t.txn_id}|en`]}
+              onInvestigate={onInvestigate}
             />
           ))}
         </AnimatePresence>
@@ -77,9 +79,9 @@ export function Rail({ txns, selectedId, onSelect, lang, tripSignal, frozen, onF
   )
 }
 
-function Row({ t, selected, open, reduce, lang, onToggle, onInvestigated }: {
+function Row({ t, selected, open, reduce, lang, onToggle, pendingSince, onInvestigate }: {
   t: Txn; selected: boolean; open: boolean; reduce: boolean; lang: Lang
-  onToggle: () => void; onInvestigated: Props['onInvestigated']
+  onToggle: () => void; pendingSince?: number; onInvestigate: Props['onInvestigate']
 }) {
   const flagged = t.action !== 'allow'
   return (
@@ -116,7 +118,7 @@ function Row({ t, selected, open, reduce, lang, onToggle, onInvestigated }: {
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
           >
-            <Detail t={t} flagged={flagged} lang={lang} onInvestigated={onInvestigated} />
+            <Detail t={t} flagged={flagged} lang={lang} pendingSince={pendingSince} onInvestigate={onInvestigate} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -124,21 +126,28 @@ function Row({ t, selected, open, reduce, lang, onToggle, onInvestigated }: {
   )
 }
 
-function Detail({ t, flagged, lang, onInvestigated }: { t: Txn; flagged: boolean; lang: Lang; onInvestigated: Props['onInvestigated'] }) {
-  const [busy, setBusy] = useState(false)
+export function Elapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  return <>{Math.max(0, Math.round((now - since) / 1000))} s</>
+}
+
+function Detail({ t, flagged, lang, pendingSince, onInvestigate }: {
+  t: Txn; flagged: boolean; lang: Lang; pendingSince?: number; onInvestigate: Props['onInvestigate']
+}) {
   const [err, setErr] = useState<string | null>(null)
   const inv = t.investigations?.[lang] ?? t.investigations?.en
   const max = Math.max(...t.factors.map((f) => f.contribution), 0.01)
 
   const ask = async () => {
-    setBusy(true)
     setErr(null)
     try {
-      onInvestigated(t.txn_id, lang, await api.investigate(t.txn_id, lang))
+      await onInvestigate(t.txn_id, lang)
     } catch (e) {
       setErr((e as Error).message)
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -167,17 +176,20 @@ function Detail({ t, flagged, lang, onInvestigated }: { t: Txn; flagged: boolean
       {t.rules_fired.length > 0 && <span className="muted">Rules fired: {t.rules_fired.join('; ')}</span>}
       {flagged && (inv ? (
         <div className={`note ${inv.source}`}>
-          <span className={`src ${inv.source === 'gemma' ? 'c-pass' : 'c-warn'}`}>
-            {inv.source === 'gemma'
-              ? `Gemma investigator · ${inv.model} · ${inv.tool_calls.length} tool call${inv.tool_calls.length === 1 ? '' : 's'}`
-              : `Fallback template${inv.error ? ` · ${inv.error}` : ''}`}
+          <span className={`src ${inv.source === 'model' ? 'c-pass' : 'c-warn'}`}>
+            {inv.label}
+            {inv.source === 'model' ? ` · ${(inv.latency_ms / 1000).toFixed(1)} s` : inv.error ? ` · ${inv.error}` : ''}
           </span>
           <p><b>Verdict: {inv.verdict}</b> — {inv.reason}</p>
           <p className="muted">Analyst: {inv.analyst_note}</p>
           {inv.tool_calls.length > 0 && <p className="muted">Tools: {inv.tool_calls.map((c) => c.name).join(', ')}</p>}
         </div>
       ) : (
-        <button className="btn" onClick={ask} disabled={busy}>{busy ? 'Investigating…' : 'Investigate with Gemma'}</button>
+        pendingSince ? (
+          <span className="c-warn" aria-live="polite">Investigating with Gemma… <Elapsed since={pendingSince} /></span>
+        ) : (
+          <button className="btn" onClick={ask}>Investigate with Gemma</button>
+        )
       ))}
       {err && <span className="err">{err}</span>}
       <span className="muted">

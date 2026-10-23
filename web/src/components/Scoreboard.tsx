@@ -5,7 +5,19 @@ function rate(s: SystemStats) {
   return s.fraud_seen ? s.fraud_caught / s.fraud_seen : 0
 }
 
-export function Scoreboard({ m }: { m: Metrics | null }) {
+function RulesHead({ name, rules }: { name: string; rules: string[] }) {
+  return (
+    <div role="columnheader" className="h muted rules-head" tabIndex={0} aria-describedby={`rules-${name}`}>
+      {name === 'simple' ? 'Rules A · simple' : 'Rules B · tight'}
+      <span className="tooltip" role="tooltip" id={`rules-${name}`}>
+        Blocks if any rule fires:
+        <ul className="list">{rules.map((r) => <li key={r}>{r}</li>)}</ul>
+      </span>
+    </div>
+  )
+}
+
+export function Scoreboard({ m, rules }: { m: Metrics | null; rules: { simple: string[]; tight: string[] } | null }) {
   if (!m) {
     return (
       <section className="panel" aria-label="Scoreboard">
@@ -14,66 +26,66 @@ export function Scoreboard({ m }: { m: Metrics | null }) {
       </section>
     )
   }
+  const systems: SystemStats[] = [m.circuit_breaker, m.rules_engine, m.rules_tight]
+  const best = (vals: number[], lower = false) => {
+    const target = lower ? Math.min(...vals) : Math.max(...vals)
+    return vals.map((v) => (vals.every((x) => x === v) ? '' : v === target ? 'win' : ''))
+  }
+  const caught = best(systems.map((s) => s.fraud_caught))
+  const blocked = best(systems.map((s) => s.legit_blocked), true)
+  const saved = best(systems.map((s) => s.rupees_saved))
   const cb = m.circuit_breaker
-  const re = m.rules_engine
-  const better = (a: number, b: number, lowerIsBetter = false) => (a === b ? '' : (lowerIsBetter ? a < b : a > b) ? 'win' : 'lose')
+  const ms = (v: number) => (v < 0.1 ? v.toFixed(3) : v.toFixed(2))
 
   return (
-    <section className="panel" aria-label="Circuit Breaker versus rules engine scoreboard">
+    <section className="panel" aria-label="Circuit Breaker versus rules engines scoreboard">
       <header>
-        <h2>Circuit Breaker vs Rules Engine</h2>
+        <h2>Breaker vs Rules</h2>
         <span className="meta">{cb.seen.toLocaleString('en-IN')} payments · {cb.fraud_seen} fraud seen</span>
       </header>
       <div className="score" role="table">
         <div role="columnheader" />
         <div role="columnheader" className="h c-pass">Circuit Breaker</div>
-        <div role="columnheader" className="h muted">Rules Engine</div>
+        <RulesHead name="simple" rules={rules?.simple ?? []} />
+        <RulesHead name="tight" rules={rules?.tight ?? []} />
 
         <div className="lbl" role="rowheader">Fraud intercepted<span className="sub">hold or block / fraud seen</span></div>
-        <div className={better(cb.fraud_caught, re.fraud_caught)}>
-          <span className="num">{cb.fraud_caught}</span> <span className="muted">/ {cb.fraud_seen}</span>
-          <span className="sub">{pct(cb.fraud_caught, cb.fraud_seen)}</span>
-          <div className="meter"><b style={{ width: `${rate(cb) * 100}%` }} /></div>
-        </div>
-        <div className={better(re.fraud_caught, cb.fraud_caught)}>
-          <span className="num">{re.fraud_caught}</span> <span className="muted">/ {re.fraud_seen}</span>
-          <span className="sub">{pct(re.fraud_caught, re.fraud_seen)}</span>
-          <div className="meter"><b style={{ width: `${rate(re) * 100}%` }} /></div>
-        </div>
+        {systems.map((s, i) => (
+          <div key={i} className={caught[i]}>
+            <span className="num">{s.fraud_caught}</span> <span className="muted">/ {s.fraud_seen}</span>
+            <span className="sub">{pct(s.fraud_caught, s.fraud_seen)}</span>
+            <div className="meter"><b style={{ width: `${rate(s) * 100}%` }} /></div>
+          </div>
+        ))}
 
         <div className="lbl" role="rowheader">Legit users wrongly blocked<span className="sub">genuine payments stopped</span></div>
-        <div className={better(cb.legit_blocked, re.legit_blocked, true)}>
-          <span className="num">{cb.legit_blocked}</span>
-          <span className="sub">+{cb.legit_held} held for a question · {cb.legit_nudged} nudged</span>
-        </div>
-        <div className={better(re.legit_blocked, cb.legit_blocked, true)}>
-          <span className="num">{re.legit_blocked}</span>
-          <span className="sub">no softer option</span>
-        </div>
+        {systems.map((s, i) => (
+          <div key={i} className={blocked[i]}>
+            <span className="num">{s.legit_blocked}</span>
+            <span className="sub">{i === 0 ? `+${s.legit_held} held · ${s.legit_nudged} nudged` : 'block only'}</span>
+          </div>
+        ))}
 
         <div className="lbl" role="rowheader">Rupees saved<span className="sub">fraud amount intercepted</span></div>
-        <div className={better(cb.rupees_saved, re.rupees_saved)}>
-          <span className="num">{inrShort(cb.rupees_saved)}</span>
-          <span className="sub">of {inrShort(cb.fraud_amount)} at risk</span>
-        </div>
-        <div className={better(re.rupees_saved, cb.rupees_saved)}>
-          <span className="num">{inrShort(re.rupees_saved)}</span>
-          <span className="sub">of {inrShort(re.fraud_amount)} at risk</span>
-        </div>
+        {systems.map((s, i) => (
+          <div key={i} className={saved[i]}>
+            <span className="num">{inrShort(s.rupees_saved)}</span>
+            <span className="sub">of {inrShort(s.fraud_amount)}</span>
+          </div>
+        ))}
 
-        <div className="lbl" role="rowheader">Decision latency<span className="sub">p50 / p95, measured</span></div>
-        <div>
-          <span className="num">{cb.p50_ms.toFixed(2)}</span> <span className="muted">/ {cb.p95_ms.toFixed(2)} ms</span>
-          <span className="sub">XGBoost + factor attribution</span>
-        </div>
-        <div>
-          <span className="num">{re.p50_ms.toFixed(3)}</span> <span className="muted">/ {re.p95_ms.toFixed(3)} ms</span>
-          <span className="sub">3 static rules</span>
-        </div>
+        <div className="lbl" role="rowheader">Decision latency<span className="sub">p50 / p95 ms, measured</span></div>
+        {systems.map((s, i) => (
+          <div key={i}>
+            <span className="num">{ms(s.p50_ms)}</span>
+            <span className="sub">p95 {ms(s.p95_ms)}</span>
+          </div>
+        ))}
       </div>
       <div className="legend">
         <span>Model v{m.model.version} · trained on {m.model.trained_on.toLocaleString('en-IN')} payments · {m.model.features} features</span>
         <span>Base model AUC on held-out days (typologies 1–4): {m.model.base_auc_typologies_1_4.toFixed(4)}</span>
+        <span>Hover or focus a rules header to see its exact rules.</span>
       </div>
     </section>
   )

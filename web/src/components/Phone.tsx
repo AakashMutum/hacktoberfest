@@ -1,6 +1,7 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useEffect, useState } from 'react'
-import { api, inr, type Copy, type Investigation, type Lang, type Txn } from '../api'
+import { inr, type Copy, type Lang, type Txn } from '../api'
+import { Elapsed } from './Rail'
 
 type Answer = null | 'yes' | 'no' | 'cancel' | 'continue'
 
@@ -12,18 +13,18 @@ interface Props {
   setLang: (l: Lang) => void
   copy: Copy | null
   holdMinutes: number
-  onInvestigated: (id: string, lang: Lang, inv: Investigation) => void
+  pendingSince?: number
+  onInvestigate: (id: string, lang: Lang) => Promise<void>
 }
 
 function fill(s: string, t: Txn, minutes: number) {
   return s.replace('{amount}', Math.round(t.amount).toLocaleString('en-IN')).replace('{payee}', t.receiver_vpa).replace('{minutes}', String(minutes))
 }
 
-export function Phone({ txn, lang, setLang, copy, holdMinutes, onInvestigated }: Props) {
+export function Phone({ txn, lang, setLang, copy, holdMinutes, pendingSince, onInvestigate }: Props) {
   const reduce = useReducedMotion()
   const [answer, setAnswer] = useState<Answer>(null)
   const [remaining, setRemaining] = useState(holdMinutes * 60)
-  const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const id = txn?.txn_id
 
@@ -45,14 +46,11 @@ export function Phone({ txn, lang, setLang, copy, holdMinutes, onInvestigated }:
 
   const askGemma = async () => {
     if (!txn) return
-    setBusy(true)
     setErr(null)
     try {
-      onInvestigated(txn.txn_id, lang, await api.investigate(txn.txn_id, lang))
+      await onInvestigate(txn.txn_id, lang)
     } catch (e) {
       setErr((e as Error).message)
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -123,12 +121,16 @@ export function Phone({ txn, lang, setLang, copy, holdMinutes, onInvestigated }:
                     inv ? (
                       <div className="stack" style={{ gap: 4 }}>
                         <div>{inv.customer_message}</div>
-                        <div className="gemma-line">{inv.source === 'gemma' ? `Gemma · ${inv.model}` : 'Fallback template (Gemma unavailable)'}</div>
+                        <div className="gemma-line">
+                          {inv.message_source === 'model' ? inv.label : inv.source === 'model' ? `Template message (model reply was not in ${LANG_LABEL[lang]})` : inv.label}
+                        </div>
                       </div>
                     ) : (
-                      <button className="pbtn" onClick={askGemma} disabled={busy}>
-                        {busy ? '…' : `Gemma explanation · ${LANG_LABEL[lang]}`}
-                      </button>
+                      pendingSince ? (
+                        <div className="gemma-line">Gemma is writing a message… <Elapsed since={pendingSince} /></div>
+                      ) : (
+                        <button className="pbtn" onClick={askGemma}>{`Gemma explanation · ${LANG_LABEL[lang]}`}</button>
+                      )
                     )
                   )}
                   {err && <div className="err">{err}</div>}

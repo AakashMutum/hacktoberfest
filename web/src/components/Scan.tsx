@@ -39,7 +39,7 @@ export function Scan({ lang, llmAvailable }: { lang: Lang; llmAvailable: boolean
           <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => send(e.target.files?.[0])} />
           {busy ? `Reading ${name}…` : 'Drop a payment request or scam SMS screenshot, or tap to choose'}
         </label>
-        {!llmAvailable && <span className="c-warn">Gemma is not configured on the server, so scanning will report unavailable.</span>}
+        {!llmAvailable && <span className="c-warn">No Gemma provider is reachable right now, so a scan will report unavailable.</span>}
         {res && (
           <div className="stack" style={{ gap: 6 }} aria-live="polite">
             <div className="kv">
@@ -51,7 +51,7 @@ export function Scan({ lang, llmAvailable }: { lang: Lang; llmAvailable: boolean
             {res.summary && <div lang={lang}>{res.summary}</div>}
             {res.scam_signals.length > 0 && (<div><span className="src muted">Scam signals</span><ul className="list">{res.scam_signals.map((s, i) => <li key={i}>{s}</li>)}</ul></div>)}
             {res.pressure_cues.length > 0 && (<div><span className="src muted">Pressure cues</span><ul className="list">{res.pressure_cues.map((s, i) => <li key={i}>{s}</li>)}</ul></div>)}
-            <span className="src c-pass">Read by {res.model}</span>
+            <span className="src c-pass">{res.label} · {(res.latency_ms / 1000).toFixed(1)} s</span>
           </div>
         )}
         {err && <span className="err">{err}</span>}

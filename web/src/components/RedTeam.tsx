@@ -57,8 +57,9 @@ export function RedTeam() {
           <div className="stack" style={{ gap: 6 }} aria-live="polite">
             <span className="src muted">Attack #{last.attack_id} · {last.injected} payments · {inr(last.amount)} · model v{last.model_version}</span>
             <Bar label="Breaker" rate={last.cb_rate} color="var(--pass)" />
-            <Bar label="Rules" rate={last.rules_rate} color="var(--muted)" />
-            <span className="muted">Intercepted {last.cb_detected} of {last.injected} (hold or block); {last.nudged} nudged. Rules blocked {last.rules_detected}.</span>
+            <Bar label="Rules A" rate={last.rules_rate} color="var(--muted)" />
+            <Bar label="Rules B" rate={last.tight_rate} color="var(--muted)" />
+            <span className="muted">Intercepted {last.cb_detected} of {last.injected} (hold or block); {last.nudged} nudged. Simple rules blocked {last.rules_detected}, tight rules {last.tight_detected}.</span>
           </div>
         )}
         {adapt && (
