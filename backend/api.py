@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -9,9 +10,9 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
@@ -19,6 +20,12 @@ from . import investigator, policy, rules  # noqa: E402
 from .engine import ROOT, Engine  # noqa: E402
 
 engine: Engine | None = None
+log = logging.getLogger("circuit_breaker")
+
+SCAN_PATH = "/api/scan-screenshot"
+MAX_IMAGE_BYTES = 6 * 1024 * 1024
+# Room for multipart boundaries and the form fields around the image.
+MAX_SCAN_BODY = MAX_IMAGE_BYTES + 64 * 1024
 
 
 @asynccontextmanager
@@ -33,6 +40,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Circuit Breaker", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def limit_scan_upload(request: Request, call_next):
+    """Reject oversized screenshot uploads from Content-Length, before the body is read."""
+    if request.url.path == SCAN_PATH and request.method == "POST":
+        length = request.headers.get("content-length")
+        if length is None:
+            return JSONResponse({"detail": "Content-Length header required"}, status_code=411)
+        try:
+            size = int(length)
+        except ValueError:
+            return JSONResponse({"detail": "invalid Content-Length header"}, status_code=400)
+        if size > MAX_SCAN_BODY:
+            return JSONResponse({"detail": "image larger than 6 MB"}, status_code=413)
+    return await call_next(request)
 
 
 class Toggle(BaseModel):
@@ -127,15 +150,18 @@ def graph(txn_id: str):
 async def scan_screenshot(file: UploadFile = File(...), lang: str = Form("en")):
     if file.content_type not in ("image/png", "image/jpeg", "image/webp"):
         raise HTTPException(415, "upload a PNG, JPEG or WebP image")
-    data = await file.read()
-    if len(data) > 6 * 1024 * 1024:
+    if await investigator.resolve_provider() is None:
+        raise HTTPException(503, "Scan unavailable: no model provider is configured")
+    data = await file.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(413, "image larger than 6 MB")
     try:
         return await investigator.scan_image(data, file.content_type, lang)
     except asyncio.TimeoutError:
         raise HTTPException(504, "Gemma did not answer in time")
-    except Exception as exc:
-        raise HTTPException(503, f"Scan unavailable: {str(exc)[:200]}")
+    except Exception:
+        log.exception("screenshot scan failed")
+        raise HTTPException(503, "Scan unavailable: the model could not read this image")
 
 
 @app.post("/api/redteam/attack")
@@ -168,13 +194,27 @@ async def ws(websocket: WebSocket):
         engine.subscribers.discard(q)
 
 
-_dist = os.path.join(ROOT, "web", "dist")
-if os.path.isdir(_dist):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_dist, "assets")), name="assets")
+DIST = os.path.realpath(os.path.join(ROOT, "web", "dist"))
+
+
+def resolve_static(path: str) -> str:
+    """Map a request path to a file inside web/dist, or to index.html for anything else."""
+    index = os.path.join(DIST, "index.html")
+    if not path:
+        return index
+    target = os.path.realpath(os.path.join(DIST, path))
+    try:
+        inside = os.path.commonpath([DIST, target]) == DIST
+    except ValueError:  # different drives on Windows
+        inside = False
+    if inside and os.path.isfile(target):
+        return target
+    return index
+
+
+if os.path.isdir(DIST):
+    app.mount("/assets", StaticFiles(directory=os.path.join(DIST, "assets")), name="assets")
 
     @app.get("/{path:path}")
     def spa(path: str):
-        target = os.path.join(_dist, path)
-        if path and os.path.isfile(target):
-            return FileResponse(target)
-        return FileResponse(os.path.join(_dist, "index.html"))
+        return FileResponse(resolve_static(path))
