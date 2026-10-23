@@ -78,9 +78,11 @@ Local Ollama (`gemma4:e4b`) is implemented, but it was not installed on the test
 
 The **Safe mode** button in the header replays real model outputs cached on disk and never waits on a model. Replayed results keep their original label, with `· replayed from cache` added. A payment with no cached output gets the labelled template.
 
-## Run it (Windows, PowerShell)
+## Run it
 
 Requirements: Python 3.10+, Node 18+.
+
+### Windows (PowerShell)
 
 ```powershell
 python -m venv .venv
@@ -100,10 +102,30 @@ powershell -ExecutionPolicy Bypass -File scripts\run_demo.ps1          # add -Ch
 
 `scripts\demo_check.py` exercises every endpoint of a running server, including a real investigation and scan when a provider is ready, and exits non-zero on any failure.
 
-**Local Gemma 4 with Ollama** (keep model files off a full drive by setting `OLLAMA_MODELS` first):
+### macOS and Linux (bash)
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+(cd web && npm install && npm run build)
+cp .env.example .env   # then edit; every variable is optional
+.venv/bin/python -m uvicorn backend.api:app --host 127.0.0.1 --port 8000
+```
+
+Check a running server from another terminal with `.venv/bin/python scripts/demo_check.py`.
+
+### Model providers
+
+**Local Gemma 4 with Ollama.** If you want model files kept off a full drive, set `OLLAMA_MODELS` before pulling and before starting the Ollama server. `D:\ollama\models` and `~/ollama-models` below are only example paths; use any folder with enough free space for the model.
 
 ```powershell
-$env:OLLAMA_MODELS = "D:\ollama\models"
+$env:OLLAMA_MODELS = "D:\ollama\models"   # example path
+ollama pull gemma4:e4b
+# in .env: LLM_PROVIDER=ollama   (or leave auto)
+```
+
+```bash
+export OLLAMA_MODELS="$HOME/ollama-models"   # example path
 ollama pull gemma4:e4b
 # in .env: LLM_PROVIDER=ollama   (or leave auto)
 ```
@@ -120,7 +142,11 @@ For frontend development: run `npm run dev` in `web/` (port 5173, proxies `/api`
 .\.venv\Scripts\python -m pytest -q tests
 ```
 
-These cover generator determinism and typologies, red-team reproducibility, scorer AUC on held-out days, attribution consistency, latency, the red-team miss and adapt, policy mapping, both rule engines, copy completeness in all three languages, and the investigator's fallback, mode switch, script check, timeout and provenance labels (using a fake provider).
+```bash
+.venv/bin/python -m pytest -q tests
+```
+
+These cover the static-file route (path traversal never reaches `.env`), the upload size limit, generator determinism and typologies, red-team reproducibility, scorer AUC on held-out days, attribution consistency, latency, the red-team miss and adapt, policy mapping, both rule engines, copy completeness in all three languages, and the investigator's fallback, mode switch, script check, timeout and provenance labels (using a fake provider).
 
 ## Results (seed 42, held-out days 22–30, 59,778 payments, 1,324 fraud)
 
