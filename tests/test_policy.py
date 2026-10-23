@@ -28,3 +28,11 @@ def test_rules_engine():
     assert rules.evaluate({**base, "amount": 60_000})[0]
     assert rules.evaluate({**base, "amount": 30_000, "new_payee": 1})[0]
     assert rules.evaluate({**base, "sender_txn_1h": 12})[0]
+
+
+def test_tight_rules_engine():
+    base = {"amount": 12_000, "new_payee": 1, "new_device": 0, "sender_txn_1h": 1, "hour": 14}
+    assert not rules.evaluate(base, "tight")[0]
+    assert rules.evaluate({**base, "hour": 2}, "tight")[0]
+    assert rules.evaluate({**base, "new_device": 1}, "tight")[0]
+    assert len(rules.describe("tight")) == 4
