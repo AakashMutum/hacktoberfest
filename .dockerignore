@@ -1,0 +1,17 @@
+.git
+.venv
+.env
+.env.*
+!.env.example
+.cache
+.shots
+data
+models
+web/node_modules
+web/dist
+docs/tour
+docs/drills
+docs/screens
+docs/*.gif
+**/__pycache__
+.pytest_cache
