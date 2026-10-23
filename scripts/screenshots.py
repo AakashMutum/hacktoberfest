@@ -5,7 +5,7 @@ import sys
 from playwright.sync_api import sync_playwright
 
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".shots")
+OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "screens")
 os.makedirs(OUT, exist_ok=True)
 
 with sync_playwright() as p:
@@ -23,14 +23,19 @@ with sync_playwright() as p:
         flagged.click()
         page.wait_for_timeout(2500)
     page.screenshot(path=os.path.join(OUT, "desktop.png"))
+    page.mouse.click(700, 890)
+    page.keyboard.press("Tab")
+    focus = page.evaluate("(() => { const e = document.activeElement; const cs = getComputedStyle(e); return e.textContent.trim() + ' | outline ' + cs.outlineStyle + ' ' + cs.outlineWidth + ' ' + cs.outlineColor })()")
+    print("keyboard focus:", focus)
+    page.screenshot(path=os.path.join(OUT, "desktop-focus.png"), clip={"x": 0, "y": 0, "width": 1440, "height": 120})
     m = browser.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True)
     m.on("pageerror", lambda e: errors.append(str(e)))
     m.goto(URL)
     m.wait_for_timeout(4000)
     m.screenshot(path=os.path.join(OUT, "mobile-stream.png"))
     for tab in ("graph", "phone", "score"):
-        m.get_by_role("tab", name=tab).click()
-        m.wait_for_timeout(1500)
+        m.locator(".tabs button", has_text=tab).click()
+        m.wait_for_timeout(2500)
         m.screenshot(path=os.path.join(OUT, f"mobile-{tab}.png"), full_page=True)
     overflow = m.evaluate("document.documentElement.scrollWidth > window.innerWidth")
     print("horizontal overflow at 390px:", overflow)

@@ -21,6 +21,7 @@ export interface Investigation {
   message_source: 'model' | 'template'
   latency_ms: number
   replayed?: boolean
+  mode_note?: string | null
   tool_calls: { name: string; args: Record<string, unknown> }[]
   error: string | null
 }

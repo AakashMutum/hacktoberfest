@@ -84,6 +84,7 @@ button { font: inherit; color: inherit; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .seg .btn { border: 0; border-radius: 0; border-right: 1px solid var(--line); }
 .seg .btn:last-child { border-right: 0; }
+.seg .btn:focus-visible { outline-offset: -4px; }
 
 /* grid */
 .grid {
@@ -274,7 +275,7 @@ footer.foot { padding: 6px 16px 8px; color: var(--muted); font-size: 11px; borde
     background: none; border: 0; padding: 10px 0 12px; min-height: 56px; cursor: pointer;
     font-family: var(--display); font-size: 15px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
   }
-  .tabs button[aria-selected='true'] { color: var(--paper); box-shadow: inset 0 2px 0 var(--trip); }
+  .tabs button[aria-current='true'] { color: var(--paper); box-shadow: inset 0 2px 0 var(--trip); }
   footer.foot { padding-bottom: 70px; }
   .rail-cols, .row-main { grid-template-columns: 44px minmax(0, 1fr) 76px 22px 50px; gap: 6px; }
 }

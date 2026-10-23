@@ -183,6 +183,7 @@ function Detail({ t, flagged, lang, pendingSince, onInvestigate }: {
           <p><b>Verdict: {inv.verdict}</b> — {inv.reason}</p>
           <p className="muted">Analyst: {inv.analyst_note}</p>
           {inv.tool_calls.length > 0 && <p className="muted">Tools: {inv.tool_calls.map((c) => c.name).join(', ')}</p>}
+          {inv.mode_note && <p className="muted">Mode note: {inv.mode_note}</p>}
         </div>
       ) : (
         pendingSince ? (

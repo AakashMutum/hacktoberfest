@@ -182,7 +182,7 @@ export default function App() {
         animate="show"
         variants={{ hidden: {}, show: { transition: { staggerChildren: reduce ? 0 : 0.12, delayChildren: 0.1 } } }}
       >
-        <motion.div variants={item} className={`col ${tab === 'stream' ? 'active' : ''}`} id="panel-stream" role="tabpanel">
+        <motion.div variants={item} className={`col ${tab === 'stream' ? 'active' : ''}`}>
           <Rail txns={txns} selectedId={selected?.txn_id ?? null} onSelect={select} lang={lang} tripSignal={tripSignal} frozen={frozen} onFreeze={onFreeze} pending={pending} onInvestigate={requestInvestigation} />
         </motion.div>
         <motion.div variants={item} className={`col center ${tab === 'graph' || tab === 'score' ? 'active' : ''}`} data-tab={tab}>
@@ -210,9 +210,9 @@ export default function App() {
         All transactions, accounts and VPAs are synthetic (seed {health?.seed ?? 42}); no real customer data is used. Trusted-contact alerts are simulated. Metrics are computed live from the replayed stream.
       </footer>
 
-      <nav className="tabs" role="tablist" aria-label="Sections">
+      <nav className="tabs" aria-label="Sections">
         {(['stream', 'graph', 'phone', 'score'] as Tab[]).map((t) => (
-          <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>{t}</button>
+          <button key={t} aria-current={tab === t ? "true" : undefined} onClick={() => { setTab(t); window.scrollTo(0, 0) }}>{t}</button>
         ))}
       </nav>
     </div>
