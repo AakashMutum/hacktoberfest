@@ -46,7 +46,8 @@ def main() -> int:
         print(f"Cannot reach {BASE}: {exc}. Start the server first (scripts\\run_demo.ps1).")
         return 2
     llm = h["llm"]
-    model_ready = llm.get("state") == "ready"
+    # A configured provider is expected to answer; warm-up state alone can lag behind a transient error.
+    model_expected = llm.get("provider") is not None
     check("GET /api/health", h.get("ok") is True,
           f"provider={llm.get('provider')} model={llm.get('model')} state={llm.get('state')}" + (f" error={llm.get('error')}" if llm.get("error") else ""))
     check("GET /api/copy", set(c.get("/api/copy").json()["copy"]) == {"en", "ta", "hi"})
@@ -72,7 +73,7 @@ def main() -> int:
             msg = wait_ws(ws, lambda m: m if m.get("type") == "investigation" and m["txn_id"] == tid else None, wait_for)
             result = msg["result"] if msg else None
         if check("POST /api/investigate/{id}", result is not None, result["label"] if result else "no result over WebSocket"):
-            if model_ready:
+            if model_expected:
                 check("investigation came from the model", result["source"] == "model",
                       f"{result['label']} in {result['latency_ms'] / 1000:.1f} s" if result["source"] == "model" else f"fallback: {result.get('error')}")
             else:
@@ -83,11 +84,18 @@ def main() -> int:
 
     with open(SAMPLE, "rb") as f:
         r = c.post("/api/scan-screenshot", files={"file": ("sample.png", f, "image/png")}, data={"lang": "en"})
-    if model_ready:
+    if model_expected:
         ok = r.status_code == 200
         check("POST /api/scan-screenshot", ok, f"{r.json()['label']} in {r.json()['latency_ms'] / 1000:.1f} s, payee={r.json()['payee']}" if ok else r.text[:200])
     else:
         check("POST /api/scan-screenshot reports unavailable", r.status_code == 503, r.json().get("detail", "")[:120])
+
+    big = b"\0" * (7 * 1024 * 1024)
+    try:
+        r = c.post("/api/scan-screenshot", files={"file": ("big.png", big, "image/png")})
+        check("oversized upload rejected", r.status_code == 413, f"HTTP {r.status_code}")
+    except httpx.HTTPError as exc:
+        check("oversized upload rejected", False, f"connection error: {type(exc).__name__}")
 
     sm = c.post("/api/safe-mode", json={"enabled": True}).json()
     check("POST /api/safe-mode", sm["enabled"] is True, f"{sm['cached_results']} cached results")

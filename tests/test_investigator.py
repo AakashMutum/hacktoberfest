@@ -127,3 +127,27 @@ def test_transient_server_error_does_not_disable_tools(monkeypatch):
     r = run(inv.investigate(TXN, "en", TOOLS, provider="gemini"))
     assert r["mode"] == "context_injection"
     assert "gemini" not in inv._no_tools
+
+
+def test_warm_up_retries_transient_errors(monkeypatch):
+    class ServerError(Exception):
+        code = 500
+
+    calls = {"n": 0}
+
+    async def chat(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ServerError("internal")
+        return {"content": "OK"}
+
+    async def provider():
+        return "ollama"
+
+    async def no_sleep(_):
+        return None
+    monkeypatch.setattr(inv, "resolve_provider", provider)
+    monkeypatch.setattr(inv, "_ollama_chat", chat)
+    monkeypatch.setattr(inv.asyncio, "sleep", no_sleep)
+    status = run(inv.warm_up())
+    assert status["state"] == "ready" and calls["n"] == 2

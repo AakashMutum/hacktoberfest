@@ -378,26 +378,35 @@ async def investigate(txn: dict, lang: str, tools: dict[str, Callable], provider
         return fallback(txn, lang, f"{provider} error: {type(exc).__name__}: {str(exc)[:120]}")
 
 
+WARM_UP_ATTEMPTS = 3
+
+
 async def warm_up() -> dict:
     """Load the model with a tiny request. Returns a status dict for the header badge."""
     provider = await resolve_provider()
     if provider is None:
         return {"provider": None, "model": None, "state": "offline", "error": "no model provider reachable", "last_latency_ms": None}
-    t0 = time.perf_counter()
-    try:
-        msgs = [{"role": "user", "content": "Reply with the single word OK."}]
-        if provider == "ollama":
-            await _ollama_chat(msgs, timeout=120.0, num_predict=4)
-        elif provider == "openai_compat":
-            await _openai_chat(msgs, timeout=10.0)
-        else:
-            await _gemini_client().aio.models.generate_content(
-                model=model_for("gemini"), contents="Reply with the single word OK.", config=_gemini_config(temperature=0.0))
-        state, error = "ready", None
-    except Exception as exc:
-        state, error = "offline", f"{type(exc).__name__}: {str(exc)[:160]}"
-    return {"provider": provider, "model": model_for(provider), "state": state, "error": error,
-            "last_latency_ms": round((time.perf_counter() - t0) * 1000)}
+    msgs = [{"role": "user", "content": "Reply with the single word OK."}]
+    state, error, latency = "offline", None, None
+    for attempt in range(WARM_UP_ATTEMPTS):
+        t0 = time.perf_counter()
+        try:
+            if provider == "ollama":
+                await _ollama_chat(msgs, timeout=120.0, num_predict=4)
+            elif provider == "openai_compat":
+                await _openai_chat(msgs, timeout=10.0)
+            else:
+                await _gemini_client().aio.models.generate_content(
+                    model=model_for("gemini"), contents="Reply with the single word OK.", config=_gemini_config(temperature=0.0))
+            state, error = "ready", None
+            latency = round((time.perf_counter() - t0) * 1000)
+            break
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {str(exc)[:160]}"
+            if not _transient(exc) or attempt == WARM_UP_ATTEMPTS - 1:
+                break
+            await asyncio.sleep(2 * (attempt + 1))
+    return {"provider": provider, "model": model_for(provider), "state": state, "error": error, "last_latency_ms": latency}
 
 
 # ---------- screenshot scan ----------
