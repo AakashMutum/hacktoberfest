@@ -28,6 +28,15 @@ with sync_playwright() as p:
     focus = page.evaluate("(() => { const e = document.activeElement; const cs = getComputedStyle(e); return e.textContent.trim() + ' | outline ' + cs.outlineStyle + ' ' + cs.outlineWidth + ' ' + cs.outlineColor })()")
     print("keyboard focus:", focus)
     page.screenshot(path=os.path.join(OUT, "desktop-focus.png"), clip={"x": 0, "y": 0, "width": 1440, "height": 120})
+    for w, h in ((1366, 768), (1920, 1080)):
+        v = browser.new_page(viewport={"width": w, "height": h})
+        v.goto(URL)
+        v.wait_for_timeout(4000)
+        v.screenshot(path=os.path.join(OUT, f"desktop-{w}x{h}.png"))
+        clipped = v.evaluate("""() => [...document.querySelectorAll('.panel')].filter(p => {
+            const r = p.getBoundingClientRect(); return r.width > 0 && r.right > window.innerWidth + 1 }).length""")
+        print(f"{w}x{h}: horizontal overflow {v.evaluate('document.documentElement.scrollWidth > window.innerWidth')}, panels past right edge {clipped}")
+        v.close()
     m = browser.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True)
     m.on("pageerror", lambda e: errors.append(str(e)))
     m.goto(URL)
