@@ -350,13 +350,13 @@ def _transient(exc: Exception) -> bool:
     return code is not None and (code >= 500 or code == 429)
 
 
-def classify_error(exc: BaseException, provider: str) -> tuple[str, str]:
+def classify_error(exc: BaseException, provider: str, timeout_s: float | None = None) -> tuple[str, str]:
     """Map a provider failure to (provider_state, short user-facing message). Details go to the log only."""
     log.warning("%s call failed: %s: %s", provider, type(exc).__name__, str(exc)[:300])
     code = _status_code(exc) if isinstance(exc, Exception) else None
     text = str(exc).lower()
     if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
-        return "slow", f"model did not answer within {timeout_for(provider):.0f} s"
+        return "slow", f"model did not answer within {timeout_s if timeout_s is not None else timeout_for(provider):.0f} s"
     if isinstance(exc, (httpx.TransportError, ConnectionError, OSError)) and code is None:
         return "offline", "model provider unreachable (network)"
     if code in (401, 403) or "api key" in text or "api_key" in text or "permission_denied" in text:
@@ -427,15 +427,16 @@ async def warm_up() -> dict:
             await _gemini_client().aio.models.generate_content(
                 model=model_for("gemini"), contents="Reply with the single word OK.", config=_gemini_config(temperature=0.0))
 
+    ping_timeout = 120.0 if provider == "ollama" else 20.0
     for attempt in range(WARM_UP_ATTEMPTS):
         t0 = time.perf_counter()
         try:
-            await asyncio.wait_for(ping(), timeout=120.0 if provider == "ollama" else 20.0)
+            await asyncio.wait_for(ping(), timeout=ping_timeout)
             state, error = "ready", None
             latency = round((time.perf_counter() - t0) * 1000)
             break
         except Exception as exc:
-            state, error = classify_error(exc, provider)
+            state, error = classify_error(exc, provider, ping_timeout)
             if not _transient(exc) or attempt == WARM_UP_ATTEMPTS - 1:
                 break
             await asyncio.sleep(2 * (attempt + 1))

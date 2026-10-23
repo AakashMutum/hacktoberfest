@@ -183,3 +183,7 @@ def test_invalid_key_falls_back_without_switching_modes(monkeypatch):
     assert r["source"] == "fallback" and r["error"] == "model provider rejected the API key"
     assert "API key not valid" not in json.dumps(r)
     assert not inv._tool_failures.get("gemini")
+
+
+def test_timeout_message_uses_the_actual_limit():
+    assert inv.classify_error(asyncio.TimeoutError(), "gemini", 20.0) == ("slow", "model did not answer within 20 s")
