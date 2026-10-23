@@ -1,6 +1,8 @@
 # 3-minute demo script
 
-Before you start, launch the server and open http://127.0.0.1:8000. Leave it running for a minute so warm-up and pre-investigation can finish. Check the header badge: it should read `ready` with the provider and model. If it reads `offline · templates`, every explanation will be labelled as a template. Say so; do not present it as model output.
+Before you start, run `powershell -ExecutionPolicy Bypass -File scriptsun_demo.ps1 -Check` and open http://127.0.0.1:8000. Leave it running for a minute so warm-up and pre-investigation can finish. Check the header badge: it should read `ready` with the provider and model. If it reads `offline · templates`, every explanation will be labelled as a template. Say so; do not present it as model output.
+
+If the network or the model is slow on stage, turn on **Safe mode** in the header. Investigations then replay real cached model outputs, labelled "replayed from cache". Rows with nothing cached show the labelled template.
 
 ## 0:00 – 0:30 · The problem
 "UPI fraud keeps changing shape, and rule engines answer it by blocking genuine customers. Circuit Breaker scores every payment in a few milliseconds and responds in proportion. Everything you see is synthetic data from a fixed seed."

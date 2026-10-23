@@ -28,12 +28,14 @@ On the synthetic held-out stream (59,778 payments, 1,324 fraud), Circuit Breaker
 - **Multilingual customer messages.** Gemma writes the customer message in English, Tamil or Hindi. Replies are checked for the right script; if the check fails, a hand-written template is shown and labelled as such.
 - **Multimodal screenshot scan.** Image plus text: Gemma 4 reads a payment request or scam message and returns structured risk evidence.
 - **Open weights for privacy.** The default provider is a local Gemma 4 E4B through Ollama, so payment data can stay on the bank's own hardware.
+- **Verified.** On the Gemini API, a full investigation with all three tool calls takes 6–8 s, including a Tamil message in Tamil script. The screenshot scan correctly read a fake electricity-disconnection scam SMS (payee, ₹4,999, high urgency, impersonation signals) in about 7 s.
 - **Honest provenance.** Every explanation is labelled, for example "Gemma 4 E4B · local · function calling" or "Template (model unavailable)".
 
 ## Challenges
 - Making synthetic fraud realistic enough to be credible. Our first dataset was perfectly separable, so we added overlap: young genuine accounts, genuine night-time and new-device transfers, genuine pass-through "collector" accounts, daytime scams and aged mule accounts.
 - Keeping a real-time stream responsive while a local model on CPU can take many seconds. Investigations run in a single background worker with a cache, and the UI shows the elapsed time.
 - Providers support tool calling differently. We built an automatic fallback to context injection rather than assuming one API.
+- On the Gemini API, Gemma 4 reasoned for about 27 s per call by default. Setting minimal thinking and asking for all three tools in one round brought a full investigation to 6–8 s.
 
 ## What's next
 - Point-in-time graph features and evaluation on real, consented data with a partner bank.
