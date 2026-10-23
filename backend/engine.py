@@ -102,6 +102,7 @@ class Engine:
         self.pending: dict[tuple[str, str], float] = {}
         self.pre_records: dict[str, dict] = {}
         self.cache = self._load_cache()
+        self.safe_mode = False
         self.reset()
 
     # ---------- state ----------
@@ -212,7 +213,7 @@ class Engine:
         prof = self.acc.iloc[a]
         idx = self.by_sender.get(a, [])
         sent = self.all.iloc[idx]
-        sent = sent[sent["ts"] <= self.clock_ts + DAY].sort_values("ts").tail(8)
+        sent = sent[sent["ts"] <= self.clock_ts + DAY].sort_values("ts").tail(5)
         return {
             "vpa": vpa, "account_age_days": int(prof["age_days"]), "usual_spend_inr": float(prof["usual_spend"]),
             "is_merchant": bool(prof["kind"] == 1), "payments_sent_total": int(len(idx)),
@@ -229,7 +230,7 @@ class Engine:
         def summarise(idx, col):
             if len(idx) == 0:
                 return []
-            sub = self.all.iloc[idx].groupby(col)["amount"].agg(["sum", "count"]).sort_values("sum", ascending=False).head(8)
+            sub = self.all.iloc[idx].groupby(col)["amount"].agg(["sum", "count"]).sort_values("sum", ascending=False).head(5)
             return [{"vpa": self.acc["vpa"].iat[n], "total_inr": round(float(s.sum)), "payments": int(s.count),
                      "account_age_days": int(self.acc["age_days"].iat[n]), "pass_through": round(float(g["passthrough"][n]), 2)}
                     for n, s in zip(sub.index, sub.itertuples())]
@@ -277,10 +278,25 @@ class Engine:
                 return hit
         return None
 
+    def _replay(self, txn_id: str, lang: str) -> dict | None:
+        """Any cached real model output for this payment, from whichever provider recorded it."""
+        prefix = f"{txn_id}|{lang}|"
+        for key, result in self.cache.items():
+            if key.startswith(prefix):
+                return investigator.replayed(result)
+        return None
+
+    def cached_count(self) -> int:
+        return len(self.cache)
+
     def request_investigation(self, txn_id: str, lang: str) -> dict | None:
         """Returns a finished result or a pending status. Never waits on the model."""
         if txn_id not in self.records:
             return None
+        if self.safe_mode:
+            result = self._replay(txn_id, lang) or investigator.fallback(self.records[txn_id], lang, "demo safe mode: no cached model output")
+            self.records[txn_id].setdefault("investigations", {})[lang] = result
+            return {"status": "done", "result": result}
         hit = self._cached(txn_id, lang)
         if hit:
             self.records[txn_id].setdefault("investigations", {})[lang] = hit
@@ -292,6 +308,11 @@ class Engine:
         return {"status": "pending", "since": self.pending[key]}
 
     def _auto(self, txn_id: str):
+        if self.safe_mode:
+            hit = self._replay(txn_id, self.lang)
+            if hit:
+                self.records[txn_id].setdefault("investigations", {})[self.lang] = hit
+            return
         if self.inv_queue is None:
             return
         hit = self._cached(txn_id, self.lang)
@@ -425,7 +446,7 @@ class Engine:
         cb_hit = sum(r["action"] in ("hold", "block") for r in recs)
         rules_hit = sum(r["rules_blocked"] for r in recs)
         tight_hit = sum(r["tight_blocked"] for r in recs)
-        result = {"attack_id": self.attack_seq, "typology": "smurfing", "injected": len(recs),
+        result = {"attack_id": self.attack_seq, "seed": self.seed, "typology": "smurfing", "injected": len(recs),
                   "amount": round(sum(r["amount"] for r in recs)), "model_version": self.scorer.version,
                   "cb_detected": cb_hit, "cb_rate": round(cb_hit / len(recs), 4),
                   "rules_detected": int(rules_hit), "rules_rate": round(rules_hit / len(recs), 4),
@@ -452,7 +473,8 @@ class Engine:
             "train_rows": int(len(train)), "train_seconds": round(new.train_seconds, 2),
             "total_seconds": round(time.perf_counter() - t0, 2),
             "auc_typologies_1_4_before": round(auc_before, 4), "auc_typologies_1_4_after": round(auc_after, 4),
-            "model_version": new.version, "eval_note": "Evaluated on held-out smurfing campaigns not used for retraining.",
+            "model_version": new.version, "seed": self.seed,
+            "eval_note": "Evaluated on held-out smurfing campaigns not used for retraining.",
         }
         return self.adapt_result
 

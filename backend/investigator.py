@@ -143,10 +143,10 @@ def _answer_spec(lang: str) -> str:
     return (
         "Reply with ONLY a JSON object with keys:\n"
         '"verdict": one of "allow","nudge","hold","block" (the least disruptive response that keeps the payer safe);\n'
-        '"reason": one or two sentences in English citing specific evidence;\n'
-        f'"customer_message": one or two short calm sentences to the payer, written in {LANG_NAMES[lang]}'
+        '"reason": one English sentence citing specific evidence;\n'
+        f'"customer_message": at most two short calm sentences to the payer, written in {LANG_NAMES[lang]}'
         + (" script" if lang != "en" else "") + ";\n"
-        '"analyst_note": one terse English line for a fraud analyst.'
+        '"analyst_note": a terse English line under 20 words.'
     )
 
 
@@ -203,6 +203,11 @@ def _finish(answer: dict, txn: dict, lang: str, provider: str, mode: str, starte
     }
 
 
+def replayed(result: dict) -> dict:
+    """A cached model result served again, keeping its original provenance."""
+    return {**result, "replayed": True, "label": f"{result['label']} · replayed from cache"}
+
+
 def fallback(txn: dict, lang: str, error: str | None = None) -> dict:
     factors = txn.get("factors", [])
     top = ", ".join(f["label"].lower() for f in factors[:3]) or "a combination of weak signals"
@@ -231,7 +236,7 @@ def _run_tool(tools, name, args, log):
 
 
 # ---------- provider calls ----------
-async def _ollama_chat(messages: list, tools: list | None = None, json_mode: bool = False, timeout: float = 60.0, num_predict: int = 220) -> dict:
+async def _ollama_chat(messages: list, tools: list | None = None, json_mode: bool = False, timeout: float = 60.0, num_predict: int = 200) -> dict:
     body = {"model": model_for("ollama"), "messages": messages, "stream": False, "keep_alive": "30m",
             "options": {"temperature": 0.2, "num_predict": num_predict}}
     if tools:
@@ -245,7 +250,7 @@ async def _ollama_chat(messages: list, tools: list | None = None, json_mode: boo
 
 
 async def _openai_chat(messages: list, tools: list | None = None, json_mode: bool = False, timeout: float = 10.0) -> dict:
-    body = {"model": model_for("openai_compat"), "messages": messages, "temperature": 0.2, "max_tokens": 400}
+    body = {"model": model_for("openai_compat"), "messages": messages, "temperature": 0.2, "max_tokens": 300}
     if tools:
         body["tools"] = tools
     if json_mode:

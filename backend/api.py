@@ -35,6 +35,10 @@ app = FastAPI(title="Circuit Breaker", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+class Toggle(BaseModel):
+    enabled: bool
+
+
 class Control(BaseModel):
     action: str
     speed: int | None = None
@@ -43,7 +47,7 @@ class Control(BaseModel):
 @app.get("/api/health")
 def health():
     return {"ok": True, "llm": engine.llm_status, "llm_available": engine.llm_status["state"] == "ready",
-            "seed": engine.seed, "rules": {"simple": rules.describe("simple"), "tight": rules.describe("tight")},
+            "seed": engine.seed, "safe_mode": engine.safe_mode, "cached_results": engine.cached_count(), "rules": {"simple": rules.describe("simple"), "tight": rules.describe("tight")},
             "thresholds": policy.THRESHOLDS, "hold_minutes": policy.HOLD_MINUTES}
 
 
@@ -96,6 +100,14 @@ async def investigate(txn_id: str, lang: str = "en"):
     if result is None:
         raise HTTPException(404, "transaction not in recent window")
     return result
+
+
+@app.post("/api/safe-mode")
+async def safe_mode(t: Toggle):
+    engine.safe_mode = t.enabled
+    state = {"enabled": engine.safe_mode, "cached_results": engine.cached_count()}
+    await engine.broadcast({"type": "safe_mode", **state})
+    return state
 
 
 @app.get("/api/llm-status")

@@ -84,3 +84,25 @@ def test_parse_answer_validates():
     with pytest.raises(ValueError):
         inv.parse_answer('{"verdict": "explode", "reason": "x", "customer_message": "y", "analyst_note": "z"}')
     assert inv.parse_answer('Sure: {"verdict": "Hold", "reason": "x", "customer_message": "y", "analyst_note": "z"}')["verdict"] == "hold"
+
+
+def test_replayed_keeps_provenance():
+    original = {**ANSWER, "source": "model", "label": "Gemma 4 26B · Gemini API · function calling"}
+    r = inv.replayed(original)
+    assert r["replayed"] is True
+    assert r["label"] == "Gemma 4 26B · Gemini API · function calling · replayed from cache"
+    assert r["reason"] == original["reason"]
+
+
+def test_safe_mode_never_queues(engine):
+    engine.reset()
+    rec = next(r for r in iter(lambda: engine.next_batch(), None) for r in r if r["action"] in ("hold", "block"))
+    engine.safe_mode = True
+    try:
+        reply = engine.request_investigation(rec["txn_id"], "en")
+        assert reply["status"] == "done"
+        assert reply["result"]["source"] == "fallback" or reply["result"].get("replayed")
+        assert not engine.pending
+    finally:
+        engine.safe_mode = False
+        engine.reset()
