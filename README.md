@@ -95,7 +95,7 @@ Open http://127.0.0.1:8000. The first start generates the data and trains the mo
 Or do all of the above in one command (it creates the venv and builds the UI if needed, with clear errors):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scriptsun_demo.ps1          # add -Check to run scripts\demo_check.py once it is up
+powershell -ExecutionPolicy Bypass -File scripts\run_demo.ps1          # add -Check to run scripts\demo_check.py once it is up
 ```
 
 `scripts\demo_check.py` exercises every endpoint of a running server, including a real investigation and scan when a provider is ready, and exits non-zero on any failure.
