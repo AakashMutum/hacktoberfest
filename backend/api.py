@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from . import investigator, policy  # noqa: E402
+from . import investigator, policy, rules  # noqa: E402
 from .engine import ROOT, Engine  # noqa: E402
 
 engine: Engine | None = None
@@ -25,7 +25,7 @@ engine: Engine | None = None
 async def lifespan(app: FastAPI):
     global engine
     engine = Engine(seed=int(os.getenv("SEED", "42")))
-    tasks = [asyncio.create_task(engine.run()), asyncio.create_task(engine.auto_investigate())]
+    tasks = [asyncio.create_task(engine.run()), asyncio.create_task(engine.worker())]
     yield
     for t in tasks:
         t.cancel()
@@ -42,8 +42,8 @@ class Control(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "provider": investigator.provider(), "model": investigator.model_name(),
-            "llm_available": investigator.available(), "seed": engine.seed,
+    return {"ok": True, "llm": engine.llm_status, "llm_available": engine.llm_status["state"] == "ready",
+            "seed": engine.seed, "rules": {"simple": rules.describe("simple"), "tight": rules.describe("tight")},
             "thresholds": policy.THRESHOLDS, "hold_minutes": policy.HOLD_MINUTES}
 
 
@@ -92,10 +92,15 @@ def txn(txn_id: str):
 async def investigate(txn_id: str, lang: str = "en"):
     if lang not in policy.LANGS:
         raise HTTPException(400, "lang must be en, ta or hi")
-    result = await engine.investigate(txn_id, lang)
+    result = engine.request_investigation(txn_id, lang)
     if result is None:
         raise HTTPException(404, "transaction not in recent window")
     return result
+
+
+@app.get("/api/llm-status")
+def llm_status():
+    return engine.llm_status
 
 
 @app.get("/api/graph/{txn_id}")

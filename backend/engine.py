@@ -3,6 +3,7 @@ tracks metrics for both, runs investigations and red-team experiments."""
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import pickle
 import time
@@ -22,7 +23,8 @@ TRAIN_DAYS = 21
 TICK_S = 0.25
 BASE_PER_TICK = 2
 ATTACK_SIZE = 60
-AUTO_INVESTIGATE_GAP_S = 4.0
+PRE_INVESTIGATE = 8
+CACHE_PATH = os.path.join(DATA_DIR, "investigation_cache.json")
 
 
 def load_dataset(seed: int):
@@ -95,6 +97,11 @@ class Engine:
         self.base_auc = self.base_scorer.auc(self.stream_df)
         self.subscribers: set[asyncio.Queue] = set()
         self.lang = "en"
+        self.llm_status = {"provider": None, "model": None, "mode": None, "state": "loading", "last_latency_ms": None}
+        self.inv_queue: asyncio.Queue | None = None
+        self.pending: dict[tuple[str, str], float] = {}
+        self.pre_records: dict[str, dict] = {}
+        self.cache = self._load_cache()
         self.reset()
 
     # ---------- state ----------
@@ -105,6 +112,7 @@ class Engine:
         self.speed = 1
         self.cb = SystemStats()
         self.rules = SystemStats()
+        self.tight = SystemStats()
         self.records: dict[str, dict] = {}
         self.order: deque = deque(maxlen=4000)
         self.injected: deque = deque()
@@ -113,8 +121,6 @@ class Engine:
         self.attacks: list[dict] = []
         self.adapt_result = None
         self.investigations: dict[tuple[str, str], dict] = {}
-        self.last_auto = 0.0
-        self.auto_queue: deque = deque(maxlen=3)
         self.clock_ts = float(self.stream_rows[0]["ts"])
 
     # ---------- scoring ----------
@@ -123,7 +129,8 @@ class Engine:
         prob, factors, _ = self.scorer.score_one(x)
         action = policy.decide(prob)
         cb_ms = (time.perf_counter() - t0) * 1000
-        r_blocked, r_fired, r_ms = rules.evaluate(row)
+        r_blocked, r_fired, r_ms = rules.evaluate(row, "simple")
+        t_blocked, t_fired, t_ms = rules.evaluate(row, "tight")
         return {
             "txn_id": row["txn_id"], "ts": float(row["ts"]), "clock": sim_clock(row["ts"]),
             "sender_vpa": row["sender_vpa"], "receiver_vpa": row["receiver_vpa"],
@@ -131,7 +138,8 @@ class Engine:
             "new_payee": int(row["new_payee"]), "new_device": int(row["new_device"]),
             "risk": round(prob, 4), "action": action, "band": policy.risk_band(action), "factors": factors,
             "rules_blocked": r_blocked, "rules_fired": r_fired,
-            "cb_ms": round(cb_ms, 3), "rules_ms": round(r_ms, 4),
+            "tight_blocked": t_blocked, "tight_fired": t_fired,
+            "cb_ms": round(cb_ms, 3), "rules_ms": round(r_ms, 4), "tight_ms": round(t_ms, 4),
             "is_fraud": bool(row["label"]), "typology": TYPOLOGY_NAMES[int(row["typology"])],
             "injected": injected, "attack_id": attack_id, "model_version": self.scorer.version,
         }
@@ -140,6 +148,7 @@ class Engine:
         for stats, flagged, blocked, ms in (
             (self.cb, rec["action"] in ("hold", "block"), rec["action"] == "block", rec["cb_ms"]),
             (self.rules, rec["rules_blocked"], rec["rules_blocked"], rec["rules_ms"]),
+            (self.tight, rec["tight_blocked"], rec["tight_blocked"], rec["tight_ms"]),
         ):
             stats.seen += 1
             stats.latencies.append(ms)
@@ -179,13 +188,13 @@ class Engine:
                 self.records.pop(self.order[0], None)
             self.order.append(rec["txn_id"])
             if policy.needs_investigation(rec["action"]):
-                self.auto_queue.append(rec["txn_id"])
+                self._auto(rec["txn_id"])
             out.append(rec)
         return out
 
     def metrics(self) -> dict:
         return {
-            "circuit_breaker": self.cb.snapshot(), "rules_engine": self.rules.snapshot(),
+            "circuit_breaker": self.cb.snapshot(), "rules_engine": self.rules.snapshot(), "rules_tight": self.tight.snapshot(),
             "stream": {"cursor": self.cursor, "total": len(self.stream_rows), "running": self.running,
                        "speed": self.speed, "clock": sim_clock(self.clock_ts), "pending_injected": len(self.injected)},
             "model": self.model_info(),
@@ -232,7 +241,7 @@ class Engine:
         }
 
     def tool_risk_factors(self, txn_id: str) -> dict:
-        rec = self.records.get(txn_id)
+        rec = self.records.get(txn_id) or self.pre_records.get(txn_id)
         if rec is None:
             return {"error": "unknown transaction"}
         return {"txn_id": txn_id, "risk": rec["risk"], "proposed_action": rec["action"], "factors": rec["factors"],
@@ -243,15 +252,99 @@ class Engine:
                 "get_graph_neighbours": self.tool_graph_neighbours,
                 "get_risk_factors": self.tool_risk_factors}
 
-    async def investigate(self, txn_id: str, lang: str) -> dict | None:
-        rec = self.records.get(txn_id)
-        if rec is None:
-            return None
+    # ---------- investigations ----------
+    def _load_cache(self) -> dict:
+        try:
+            with open(CACHE_PATH, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def _save_cache(self):
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(self.cache, f, ensure_ascii=False)
+
+    def _cached(self, txn_id: str, lang: str) -> dict | None:
         key = (txn_id, lang)
-        if key not in self.investigations:
-            self.investigations[key] = await investigator.investigate(rec, lang, self.tools())
-        rec.setdefault("investigations", {})[lang] = self.investigations[key]
-        return self.investigations[key]
+        if key in self.investigations:
+            return self.investigations[key]
+        provider = self.llm_status.get("provider")
+        if provider:
+            hit = self.cache.get(f"{txn_id}|{lang}|{provider}")
+            if hit:
+                self.investigations[key] = hit
+                return hit
+        return None
+
+    def request_investigation(self, txn_id: str, lang: str) -> dict | None:
+        """Returns a finished result or a pending status. Never waits on the model."""
+        if txn_id not in self.records:
+            return None
+        hit = self._cached(txn_id, lang)
+        if hit:
+            self.records[txn_id].setdefault("investigations", {})[lang] = hit
+            return {"status": "done", "result": hit}
+        key = (txn_id, lang)
+        if key not in self.pending:
+            self.pending[key] = time.time()
+            self.inv_queue.put_nowait(key)
+        return {"status": "pending", "since": self.pending[key]}
+
+    def _auto(self, txn_id: str):
+        if self.inv_queue is None:
+            return
+        hit = self._cached(txn_id, self.lang)
+        if hit:
+            self.records[txn_id].setdefault("investigations", {})[self.lang] = hit
+            return
+        if self.inv_queue.qsize() == 0 and not self.pending:
+            self.request_investigation(txn_id, self.lang)
+
+    async def _investigate_now(self, rec: dict, lang: str) -> dict:
+        result = await investigator.investigate(rec, lang, self.tools())
+        if result["source"] == "model":
+            self.llm_status.update(provider=result["provider"], model=result["model"], mode=result["mode"],
+                                   state="ready", last_latency_ms=result["latency_ms"])
+            self.cache[f"{rec['txn_id']}|{lang}|{result['provider']}"] = result
+            self._save_cache()
+        elif result["error"] == "no model provider reachable":
+            self.llm_status.update(provider=None, model=None, mode=None, state="offline")
+        return result
+
+    async def worker(self):
+        """Single background worker: concurrency 1 so a local CPU model is never oversubscribed."""
+        self.inv_queue = asyncio.Queue()
+        self.llm_status.update(await investigator.warm_up())
+        await self.broadcast({"type": "llm_status", "status": self.llm_status})
+        asyncio.create_task(self.pre_investigate())
+        while True:
+            txn_id, lang = await self.inv_queue.get()
+            rec = self.records.get(txn_id)
+            if rec is not None:
+                result = await self._investigate_now(rec, lang)
+                self.investigations[(txn_id, lang)] = result
+                rec.setdefault("investigations", {})[lang] = result
+                await self.broadcast({"type": "investigation", "txn_id": txn_id, "lang": lang, "result": result,
+                                      "status": self.llm_status})
+            self.pending.pop((txn_id, lang), None)
+
+    async def pre_investigate(self):
+        """Investigate the first flagged payments of the seeded stream ahead of time, cached on disk."""
+        if not self.llm_status.get("provider") or self.llm_status["state"] != "ready":
+            return
+        provider = self.llm_status["provider"]
+        p = self.base_scorer.predict(self.stream_df.iloc[:5000])
+        idx = [i for i in range(len(p)) if p[i] >= policy.THRESHOLDS["hold"]][:PRE_INVESTIGATE]
+        for i in idx:
+            row = self.stream_rows[i]
+            if f"{row['txn_id']}|en|{provider}" in self.cache:
+                continue
+            rec = self._score(row, self.stream_X[i])
+            self.pre_records[rec["txn_id"]] = rec
+            while not self.inv_queue.empty() or self.pending:
+                await asyncio.sleep(1)
+            await self._investigate_now(rec, "en")
 
     # ---------- graph ----------
     def _graph_cache(self):
@@ -309,9 +402,13 @@ class Engine:
     def _detect(self, df: pd.DataFrame, scorer: Scorer) -> dict:
         p = scorer.predict(df)
         flagged = p >= policy.THRESHOLDS["hold"]
-        rule_hits = sum(rules.evaluate(r)[0] for r in df.to_dict("records"))
+        recs = df.to_dict("records")
+        rule_hits = sum(rules.evaluate(r, "simple")[0] for r in recs)
+        tight_hits = sum(rules.evaluate(r, "tight")[0] for r in recs)
+        n = max(len(df), 1)
         return {"n": int(len(df)), "detected": int(flagged.sum()), "rate": round(float(flagged.mean()), 4),
-                "rules_detected": int(rule_hits), "rules_rate": round(rule_hits / max(len(df), 1), 4)}
+                "rules_detected": int(rule_hits), "rules_rate": round(rule_hits / n, 4),
+                "tight_detected": int(tight_hits), "tight_rate": round(tight_hits / n, 4)}
 
     def attack(self) -> dict:
         n = len(self.pool_eval)
@@ -327,10 +424,12 @@ class Engine:
         self.injected.extend(recs)
         cb_hit = sum(r["action"] in ("hold", "block") for r in recs)
         rules_hit = sum(r["rules_blocked"] for r in recs)
+        tight_hit = sum(r["tight_blocked"] for r in recs)
         result = {"attack_id": self.attack_seq, "typology": "smurfing", "injected": len(recs),
                   "amount": round(sum(r["amount"] for r in recs)), "model_version": self.scorer.version,
                   "cb_detected": cb_hit, "cb_rate": round(cb_hit / len(recs), 4),
                   "rules_detected": int(rules_hit), "rules_rate": round(rules_hit / len(recs), 4),
+                  "tight_detected": int(tight_hit), "tight_rate": round(tight_hit / len(recs), 4),
                   "nudged": sum(r["action"] == "nudge" for r in recs)}
         self.attacks.append(result)
         return result
@@ -371,16 +470,3 @@ class Engine:
                 continue
             batch = self.next_batch()
             await self.broadcast({"type": "batch", "txns": batch, "metrics": self.metrics()})
-
-    async def auto_investigate(self):
-        """Investigate hold/block transactions as they appear, rate limited to protect API quota."""
-        while True:
-            await asyncio.sleep(0.5)
-            if not self.auto_queue or time.monotonic() - self.last_auto < AUTO_INVESTIGATE_GAP_S:
-                continue
-            txn_id = self.auto_queue.pop()
-            self.auto_queue.clear()
-            self.last_auto = time.monotonic()
-            result = await self.investigate(txn_id, self.lang)
-            if result is not None:
-                await self.broadcast({"type": "investigation", "txn_id": txn_id, "lang": self.lang, "result": result})
