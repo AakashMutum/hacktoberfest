@@ -3,12 +3,14 @@
 Usage: .venv\\Scripts\\python scripts\\demo_check.py [base_url]
 Exit code 0 when every required check passes. Model checks are required only when a provider is ready.
 """
+import io
 import json
 import os
 import sys
 import time
 
 import httpx
+from PIL import Image
 from websockets.sync.client import connect
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000").rstrip("/")
@@ -82,11 +84,16 @@ def main() -> int:
     check("POST /api/lang/ta", c.post("/api/lang/ta").json()["lang"] == "ta")
     c.post("/api/lang/en")
 
-    with open(SAMPLE, "rb") as f:
-        r = c.post("/api/scan-screenshot", files={"file": ("sample.png", f, "image/png")}, data={"lang": "en"})
+    # A one-pixel change gives an image the cache has never seen, so this exercises a live model call.
+    img = Image.open(SAMPLE).convert("RGB")
+    img.putpixel((0, 0), (int(time.time()) % 256, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    r = c.post("/api/scan-screenshot", files={"file": ("sample.png", buf.getvalue(), "image/png")}, data={"lang": "en"})
     if model_expected:
         ok = r.status_code == 200
-        check("POST /api/scan-screenshot", ok, f"{r.json()['label']} in {r.json()['latency_ms'] / 1000:.1f} s, payee={r.json()['payee']}" if ok else r.text[:200])
+        ok = ok and not r.json().get("replayed")
+        check("POST /api/scan-screenshot (live, not from cache)", ok, f"{r.json()['label']} in {r.json()['latency_ms'] / 1000:.1f} s, payee={r.json()['payee']}" if ok else r.text[:200])
     else:
         check("POST /api/scan-screenshot reports unavailable", r.status_code == 503, r.json().get("detail", "")[:120])
 
