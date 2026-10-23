@@ -59,3 +59,10 @@ def test_scan_rejects_oversized_content_length(client):
     r = client.post(api.SCAN_PATH, content=b"x", headers={"content-type": "multipart/form-data; boundary=x",
                                                              "content-length": str(api.MAX_SCAN_BODY + 1)})
     assert r.status_code == 413
+
+
+def test_server_binds_to_localhost_by_default(monkeypatch):
+    from backend import __main__ as entry
+    monkeypatch.delenv("HOST", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+    assert entry.settings() == ("127.0.0.1", 8000)

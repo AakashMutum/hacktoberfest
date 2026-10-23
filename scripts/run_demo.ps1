@@ -43,7 +43,8 @@ $busy = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Silentl
 if ($busy) { Fail "Port $Port is already in use (PID $($busy[0].OwningProcess)). Stop that process or pass -Port." }
 
 Write-Host "Starting Circuit Breaker on http://127.0.0.1:$Port ..."
-$server = Start-Process -FilePath $Py -ArgumentList '-m', 'uvicorn', 'backend.api:app', '--host', '127.0.0.1', '--port', $Port -PassThru -NoNewWindow
+$env:HOST = '127.0.0.1'; $env:PORT = "$Port"
+$server = Start-Process -FilePath $Py -ArgumentList '-m', 'backend' -PassThru -NoNewWindow
 
 $ready = $false
 for ($i = 0; $i -lt 60; $i++) {
