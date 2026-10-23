@@ -178,6 +178,15 @@ async def scan_screenshot(file: UploadFile = File(...), lang: str = Form("en")):
     return result
 
 
+@app.get("/api/sample-scam-sms")
+def sample_scam_sms():
+    """The fictional scam SMS used by the demo tour and the scan panel."""
+    from .engine import SAMPLE_IMAGE
+    if not os.path.isfile(SAMPLE_IMAGE):
+        raise HTTPException(404, "sample image missing")
+    return FileResponse(SAMPLE_IMAGE, media_type="image/png")
+
+
 @app.post("/api/redteam/attack")
 def redteam_attack():
     return engine.attack()

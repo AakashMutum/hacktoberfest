@@ -10,18 +10,23 @@ interface Props {
   tripSignal: number
   frozen: boolean
   onFreeze: (frozen: boolean) => void
+  openId?: string | null
   pending: Record<string, number>
   onInvestigate: (id: string, lang: Lang) => Promise<void>
 }
 
 const ACTION_LABEL = { allow: 'Pass', nudge: 'Nudge', hold: 'Hold', block: 'Trip' } as const
 
-export function Rail({ txns, selectedId, onSelect, lang, tripSignal, frozen, onFreeze, pending, onInvestigate }: Props) {
+export function Rail({ txns, selectedId, onSelect, lang, tripSignal, frozen, onFreeze, openId, pending, onInvestigate }: Props) {
   const reduce = useReducedMotion()
   const lever = useAnimationControls()
   const panel = useAnimationControls()
   const [expanded, setExpanded] = useState<string | null>(null)
   const [hovering, setHovering] = useState(false)
+
+  useEffect(() => {
+    if (openId) setExpanded(openId)
+  }, [openId])
 
   useEffect(() => {
     onFreeze(hovering || expanded !== null)

@@ -248,6 +248,29 @@ footer.foot { padding: 6px 16px 8px; color: var(--muted); font-size: 11px; borde
 .slot { display: flex; flex-direction: column; min-height: 0; }
 .slot-graph { flex: 1; }
 
+.impact { display: flex; gap: 16px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.impact > div { display: flex; flex-direction: column; }
+.impact-lbl { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.impact-num { font-family: var(--display); font-weight: 800; font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums; }
+.impact-sub { flex: 1; min-width: 220px; color: var(--muted); font-size: 11px; }
+
+/* demo tour */
+.tour.left { left: 16px; width: min(384px, calc(100vw - 32px)); }
+.tour.right { right: 16px; }
+.col.center { overflow-y: auto; }
+.col.center .slot-graph { min-height: 300px; }
+.tour-hl > .panel { outline: 2px solid var(--warn); outline-offset: 2px; box-shadow: 0 0 0 8px rgba(255, 176, 32, 0.12); }
+.tour {
+  position: fixed; z-index: 40; bottom: 44px;
+  width: min(440px, calc(100vw - 32px)); padding: 14px 16px; border: 1px solid var(--warn); border-radius: var(--radius);
+  background: rgba(13, 12, 11, 0.97); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+.tour h2 { font-family: var(--display); font-size: 22px; letter-spacing: 0.06em; text-transform: uppercase; margin: 6px 0 4px; }
+.tour p { margin: 0 0 8px; }
+.tour-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+.tour-status { color: var(--warn); }
+.tour-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
 /* mobile */
 .tabs { display: none; }
 @media (max-width: 900px) {
@@ -277,6 +300,9 @@ footer.foot { padding: 6px 16px 8px; color: var(--muted); font-size: 11px; borde
   }
   .tabs button[aria-current='true'] { color: var(--paper); box-shadow: inset 0 2px 0 var(--trip); }
   footer.foot { padding-bottom: 70px; }
+  .tour, .tour.left, .tour.right { bottom: 70px; left: 16px; right: 16px; width: auto; }
+  .col.center { overflow: visible; }
+  .tour-meta .muted { display: none; }
   .rail-cols, .row-main { grid-template-columns: 44px minmax(0, 1fr) 76px 22px 50px; gap: 6px; }
 }
 @media (max-width: 900px) {

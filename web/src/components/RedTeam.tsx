@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, inr, type AdaptResult, type AttackResult } from '../api'
 
 function Bar({ label, rate, color }: { label: string; rate: number; color: string }) {
@@ -11,12 +11,13 @@ function Bar({ label, rate, color }: { label: string; rate: number; color: strin
   )
 }
 
-export function RedTeam() {
+export function RedTeam({ command }: { command?: { kind: 'attack' | 'adapt'; nonce: number } | null }) {
   const [attacks, setAttacks] = useState<AttackResult[]>([])
   const [adapt, setAdapt] = useState<AdaptResult | null>(null)
   const [busy, setBusy] = useState<'attack' | 'adapt' | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const last = attacks[attacks.length - 1]
+  const handled = useRef(0)
 
   const run = async (kind: 'attack' | 'adapt') => {
     setBusy(kind)
@@ -34,6 +35,12 @@ export function RedTeam() {
       setBusy(null)
     }
   }
+
+  useEffect(() => {
+    if (!command || command.nonce === handled.current) return
+    handled.current = command.nonce
+    void run(command.kind)
+  }, [command])
 
   return (
     <section className="panel" aria-label="Red team">

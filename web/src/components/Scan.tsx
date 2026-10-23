@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, inr, type Lang, type ScanResult } from '../api'
 
-export function Scan({ lang, llmAvailable }: { lang: Lang; llmAvailable: boolean }) {
+export function Scan({ lang, llmAvailable, sampleNonce }: { lang: Lang; llmAvailable: boolean; sampleNonce?: number }) {
   const [over, setOver] = useState(false)
   const [busy, setBusy] = useState(false)
   const [res, setRes] = useState<ScanResult | null>(null)
@@ -23,6 +23,20 @@ export function Scan({ lang, llmAvailable }: { lang: Lang; llmAvailable: boolean
     }
   }
 
+  const handled = useRef(0)
+  const [nonceLocal, setNonceLocal] = useState(0)
+  const nonce = Math.max(sampleNonce ?? 0, nonceLocal)
+  useEffect(() => {
+    if (!nonce || nonce === handled.current) return
+    handled.current = nonce
+    fetch('/api/sample-scam-sms')
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('sample image unavailable'))))
+      .then((b) => send(new File([b], 'sample-scam-sms.png', { type: 'image/png' })))
+      .catch(() => setErr('The sample screenshot could not be loaded.'))
+    // send only depends on lang, which the tour sets before this step
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nonce])
+
   return (
     <section className="panel" aria-label="Screenshot scan">
       <header>
@@ -39,7 +53,8 @@ export function Scan({ lang, llmAvailable }: { lang: Lang; llmAvailable: boolean
           <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => send(e.target.files?.[0])} />
           {busy ? `Reading ${name}…` : 'Drop a payment request or scam SMS screenshot, or tap to choose'}
         </label>
-        {!llmAvailable && <span className="c-warn">No Gemma provider is reachable right now, so a scan will report unavailable.</span>}
+        {!llmAvailable && <span className="c-warn">No Gemma provider is reachable right now. Only screenshots read earlier can be shown, from cache.</span>}
+        <button className="btn" onClick={() => setNonceLocal(Date.now())} disabled={busy}>Try the sample scam SMS</button>
         {res && (
           <div className="stack" style={{ gap: 6 }} aria-live="polite">
             <div className="kv">
