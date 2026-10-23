@@ -97,7 +97,7 @@ class Engine:
         self.base_auc = self.base_scorer.auc(self.stream_df)
         self.subscribers: set[asyncio.Queue] = set()
         self.lang = "en"
-        self.llm_status = {"provider": None, "model": None, "mode": None, "state": "loading", "last_latency_ms": None}
+        self.llm_status = {"provider": None, "model": None, "mode": None, "state": "loading", "last_latency_ms": None, "error": None}
         self.inv_queue: asyncio.Queue | None = None
         self.pending: dict[tuple[str, str], float] = {}
         self.pre_records: dict[str, dict] = {}
@@ -305,7 +305,7 @@ class Engine:
         result = await investigator.investigate(rec, lang, self.tools())
         if result["source"] == "model":
             self.llm_status.update(provider=result["provider"], model=result["model"], mode=result["mode"],
-                                   state="ready", last_latency_ms=result["latency_ms"])
+                                   state="ready", last_latency_ms=result["latency_ms"], error=None)
             self.cache[f"{rec['txn_id']}|{lang}|{result['provider']}"] = result
             self._save_cache()
         elif result["error"] == "no model provider reachable":

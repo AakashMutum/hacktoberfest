@@ -151,7 +151,10 @@ def _answer_spec(lang: str) -> str:
 
 
 def _fc_prompt(txn: dict, lang: str) -> str:
-    return _task(txn, lang) + "Call the tools to check the risk factors, the payer's history and the payee's neighbours, then decide.\n" + _answer_spec(lang)
+    return (_task(txn, lang)
+            + "In your first reply, call all three tools together: get_risk_factors for the transaction, "
+            "get_account_history for the payer and get_graph_neighbours for the payee. Then decide.\n"
+            + _answer_spec(lang))
 
 
 def _ci_prompt(txn: dict, lang: str, tools: dict[str, Callable]) -> str:
@@ -259,14 +262,23 @@ def _gemini_client():
     return genai.Client(api_key=_env("GEMINI_API_KEY"))
 
 
+def _gemini_config(json_mode: bool = False, **kw):
+    """Gemma 4 on the Gemini API thinks at length by default (25 s+); minimal thinking keeps a call near 4 s."""
+    from google.genai import types
+    extra = {"thinking_config": types.ThinkingConfig(thinking_level="minimal")}
+    if json_mode:
+        extra["response_mime_type"] = "application/json"
+    return types.GenerateContentConfig(temperature=kw.pop("temperature", 0.2), **extra, **kw)
+
+
 async def _function_calling(provider: str, txn: dict, lang: str, tools: dict) -> tuple[dict, list]:
     log: list = []
     if provider == "gemini":
         from google.genai import types
         client = _gemini_client()
         decls = [types.FunctionDeclaration(name=t["name"], description=t["description"], parameters=t["parameters"]) for t in TOOL_SPECS]
-        config = types.GenerateContentConfig(
-            tools=[types.Tool(function_declarations=decls)], temperature=0.2,
+        config = _gemini_config(
+            tools=[types.Tool(function_declarations=decls)],
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
         contents = [types.Content(role="user", parts=[types.Part.from_text(text=_fc_prompt(txn, lang))])]
@@ -307,9 +319,8 @@ async def _function_calling(provider: str, txn: dict, lang: str, tools: dict) ->
 async def _context_injection(provider: str, txn: dict, lang: str, tools: dict) -> dict:
     prompt = _ci_prompt(txn, lang, tools)
     if provider == "gemini":
-        from google.genai import types
         resp = await _gemini_client().aio.models.generate_content(
-            model=model_for("gemini"), contents=prompt, config=types.GenerateContentConfig(temperature=0.2))
+            model=model_for("gemini"), contents=prompt, config=_gemini_config(json_mode=True))
         return parse_answer(resp.text or "")
     messages = [{"role": "user", "content": prompt}]
     if provider == "ollama":
@@ -352,7 +363,7 @@ async def warm_up() -> dict:
     """Load the model with a tiny request. Returns a status dict for the header badge."""
     provider = await resolve_provider()
     if provider is None:
-        return {"provider": None, "model": None, "state": "offline", "last_latency_ms": None}
+        return {"provider": None, "model": None, "state": "offline", "error": "no model provider reachable", "last_latency_ms": None}
     t0 = time.perf_counter()
     try:
         msgs = [{"role": "user", "content": "Reply with the single word OK."}]
@@ -361,11 +372,12 @@ async def warm_up() -> dict:
         elif provider == "openai_compat":
             await _openai_chat(msgs, timeout=10.0)
         else:
-            await _gemini_client().aio.models.generate_content(model=model_for("gemini"), contents="Reply with the single word OK.")
-        state = "ready"
-    except Exception:
-        state = "offline"
-    return {"provider": provider, "model": model_for(provider), "state": state,
+            await _gemini_client().aio.models.generate_content(
+                model=model_for("gemini"), contents="Reply with the single word OK.", config=_gemini_config(temperature=0.0))
+        state, error = "ready", None
+    except Exception as exc:
+        state, error = "offline", f"{type(exc).__name__}: {str(exc)[:160]}"
+    return {"provider": provider, "model": model_for(provider), "state": state, "error": error,
             "last_latency_ms": round((time.perf_counter() - t0) * 1000)}
 
 
@@ -421,7 +433,7 @@ async def scan_image(data: bytes, mime: str, lang: str) -> dict:
             resp = await _gemini_client().aio.models.generate_content(
                 model=model_for("gemini"),
                 contents=[types.Content(role="user", parts=[types.Part.from_bytes(data=data, mime_type=mime), types.Part.from_text(text=prompt)])],
-                config=types.GenerateContentConfig(temperature=0.1),
+                config=_gemini_config(json_mode=True, temperature=0.1),
             )
             return parse_scan(resp.text or "")
         b64 = base64.b64encode(data).decode()
