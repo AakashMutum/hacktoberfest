@@ -1,0 +1,23 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# generated data and models (rebuilt deterministically from the seed)
+data/
+models/
+
+# frontend
+web/node_modules/
+web/dist/
+.cache/
+
+# local artefacts
+.shots/
+*.log
