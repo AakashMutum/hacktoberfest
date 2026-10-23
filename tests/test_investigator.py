@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -61,7 +62,8 @@ def test_tool_rejection_switches_to_context_injection(monkeypatch):
     r = run(inv.investigate(TXN, "en", TOOLS, provider="gemini"))
     assert r["mode"] == "context_injection"
     assert r["label"] == "Gemma 4 26B · Gemini API · context injection"
-    assert "tools not supported" in r["mode_note"]
+    assert r["mode_note"] == "function calling failed (model reply could not be used); used context injection"
+    assert "tools not supported" not in r["mode_note"]
     assert "gemini" not in inv._no_tools
     run(inv.investigate(TXN, "en", TOOLS, provider="gemini"))
     assert "gemini" in inv._no_tools
@@ -82,7 +84,8 @@ def test_timeout_is_labelled_fallback(monkeypatch):
     monkeypatch.setattr(inv, "_function_calling", slow)
     monkeypatch.setattr(inv, "timeout_for", lambda p: 0.05)
     r = run(inv.investigate(TXN, "en", TOOLS, provider="openai_compat"))
-    assert r["source"] == "fallback" and "timed out" in r["error"]
+    assert r["source"] == "fallback" and r["error"] == "model did not answer within 0 s"
+    assert r["provider_state"] == "slow"
 
 
 def test_parse_answer_validates():
@@ -151,3 +154,32 @@ def test_warm_up_retries_transient_errors(monkeypatch):
     monkeypatch.setattr(inv.asyncio, "sleep", no_sleep)
     status = run(inv.warm_up())
     assert status["state"] == "ready" and calls["n"] == 2
+
+
+class _Coded(Exception):
+    def __init__(self, code, msg=""):
+        super().__init__(msg)
+        self.code = code
+
+
+@pytest.mark.parametrize("exc,state,message", [
+    (_Coded(400, "API key not valid. Please pass a valid API key."), "offline", "model provider rejected the API key"),
+    (_Coded(403, "denied"), "offline", "model provider rejected the API key"),
+    (_Coded(429, "quota"), "busy", "model provider rate limit reached"),
+    (_Coded(500, "INTERNAL"), "busy", "model provider had a temporary error"),
+    (__import__("httpx").ConnectError("dns failure"), "offline", "model provider unreachable (network)"),
+    (asyncio.TimeoutError(), "slow", "model did not answer within 10 s"),
+    (ValueError("no JSON object in model output"), "error", "model reply could not be used"),
+])
+def test_errors_are_classified_without_raw_text(exc, state, message):
+    assert inv.classify_error(exc, "gemini") == (state, message)
+
+
+def test_invalid_key_falls_back_without_switching_modes(monkeypatch):
+    async def fc(*a):
+        raise _Coded(400, "API key not valid")
+    monkeypatch.setattr(inv, "_function_calling", fc)
+    r = run(inv.investigate(TXN, "en", TOOLS, provider="gemini"))
+    assert r["source"] == "fallback" and r["error"] == "model provider rejected the API key"
+    assert "API key not valid" not in json.dumps(r)
+    assert not inv._tool_failures.get("gemini")

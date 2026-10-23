@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import time
@@ -21,6 +22,8 @@ from typing import Callable
 import httpx
 
 from . import policy
+
+log = logging.getLogger("circuit_breaker.investigator")
 
 LANG_NAMES = {"en": "English", "ta": "Tamil", "hi": "Hindi"}
 SCRIPT_RANGES = {"ta": (0x0B80, 0x0BFF), "hi": (0x0900, 0x097F)}
@@ -210,7 +213,7 @@ def replayed(result: dict) -> dict:
     return {**result, "replayed": True, "label": f"{result['label']} · replayed from cache"}
 
 
-def fallback(txn: dict, lang: str, error: str | None = None) -> dict:
+def fallback(txn: dict, lang: str, error: str | None = None, provider_state: str | None = None) -> dict:
     factors = txn.get("factors", [])
     top = ", ".join(f["label"].lower() for f in factors[:3]) or "a combination of weak signals"
     action = txn["action"]
@@ -221,7 +224,7 @@ def fallback(txn: dict, lang: str, error: str | None = None) -> dict:
         "analyst_note": "; ".join(f"{f['label']}={_fmt(f['value'])} (+{f['contribution']:.2f})" for f in factors[:4]),
         "source": "fallback", "provider": None, "model": None, "mode": None,
         "label": provenance(None, None, None), "message_source": "template",
-        "latency_ms": 0, "tool_calls": [], "error": error,
+        "latency_ms": 0, "tool_calls": [], "error": error, "provider_state": provider_state,
     }
 
 
@@ -337,9 +340,37 @@ async def _context_injection(provider: str, txn: dict, lang: str, tools: dict) -
     return parse_answer(msg.get("content") or "")
 
 
-def _transient(exc: Exception) -> bool:
+def _status_code(exc: Exception) -> int | None:
     code = getattr(exc, "code", None) or getattr(getattr(exc, "response", None), "status_code", None)
-    return isinstance(code, int) and (code >= 500 or code == 429)
+    return code if isinstance(code, int) else None
+
+
+def _transient(exc: Exception) -> bool:
+    code = _status_code(exc)
+    return code is not None and (code >= 500 or code == 429)
+
+
+def classify_error(exc: BaseException, provider: str) -> tuple[str, str]:
+    """Map a provider failure to (provider_state, short user-facing message). Details go to the log only."""
+    log.warning("%s call failed: %s: %s", provider, type(exc).__name__, str(exc)[:300])
+    code = _status_code(exc) if isinstance(exc, Exception) else None
+    text = str(exc).lower()
+    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+        return "slow", f"model did not answer within {timeout_for(provider):.0f} s"
+    if isinstance(exc, (httpx.TransportError, ConnectionError, OSError)) and code is None:
+        return "offline", "model provider unreachable (network)"
+    if code in (401, 403) or "api key" in text or "api_key" in text or "permission_denied" in text:
+        return "offline", "model provider rejected the API key"
+    if code == 429:
+        return "busy", "model provider rate limit reached"
+    if code is not None and code >= 500:
+        return "busy", "model provider had a temporary error"
+    return "error", "model reply could not be used"
+
+
+def _abort(state: str) -> bool:
+    """Failures where a second attempt in another mode cannot help."""
+    return state in ("offline", "slow")
 
 
 async def investigate(txn: dict, lang: str, tools: dict[str, Callable], provider: str | None = None) -> dict:
@@ -347,23 +378,22 @@ async def investigate(txn: dict, lang: str, tools: dict[str, Callable], provider
     lang = lang if lang in LANG_NAMES else "en"
     provider = provider or await resolve_provider()
     if provider is None:
-        return fallback(txn, lang, "no model provider reachable")
+        return fallback(txn, lang, "no model provider reachable", "offline")
     started = time.perf_counter()
     deadline = timeout_for(provider)
     mode_note = None if provider not in _no_tools else "tool calling disabled after repeated failures"
     if provider not in _no_tools:
         try:
-            answer, log = await asyncio.wait_for(_function_calling(provider, txn, lang, tools), timeout=deadline)
+            answer, calls = await asyncio.wait_for(_function_calling(provider, txn, lang, tools), timeout=deadline)
             _tool_failures[provider] = 0
-            return _finish(answer, txn, lang, provider, "function_calling", started, log)
-        except asyncio.TimeoutError:
-            return fallback(txn, lang, f"{provider} timed out after {deadline:.0f}s")
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-            return fallback(txn, lang, f"{provider} unreachable: {type(exc).__name__}")
+            return _finish(answer, txn, lang, provider, "function_calling", started, calls)
         except Exception as exc:
-            # Tools rejected (4xx) or malformed calls twice in a row: context injection from now on.
-            # A transient server error only falls back for this call.
-            mode_note = f"function calling failed: {type(exc).__name__}: {str(exc)[:120]}"
+            state, message = classify_error(exc, provider)
+            if _abort(state):
+                return fallback(txn, lang, message, state)
+            # Tools rejected or malformed calls twice in a row: context injection from now on.
+            # A temporary server error only falls back for this call.
+            mode_note = f"function calling failed ({message}); used context injection"
             if not _transient(exc):
                 _tool_failures[provider] = _tool_failures.get(provider, 0) + 1
                 if _tool_failures[provider] >= TOOL_FAILURE_LIMIT:
@@ -372,10 +402,9 @@ async def investigate(txn: dict, lang: str, tools: dict[str, Callable], provider
     try:
         answer = await asyncio.wait_for(_context_injection(provider, txn, lang, tools), timeout=remaining)
         return {**_finish(answer, txn, lang, provider, "context_injection", started, []), "mode_note": mode_note}
-    except asyncio.TimeoutError:
-        return fallback(txn, lang, f"{provider} timed out after {deadline:.0f}s")
     except Exception as exc:
-        return fallback(txn, lang, f"{provider} error: {type(exc).__name__}: {str(exc)[:120]}")
+        state, message = classify_error(exc, provider)
+        return fallback(txn, lang, message, state)
 
 
 WARM_UP_ATTEMPTS = 3
@@ -388,21 +417,25 @@ async def warm_up() -> dict:
         return {"provider": None, "model": None, "state": "offline", "error": "no model provider reachable", "last_latency_ms": None}
     msgs = [{"role": "user", "content": "Reply with the single word OK."}]
     state, error, latency = "offline", None, None
+
+    async def ping():
+        if provider == "ollama":
+            await _ollama_chat(msgs, timeout=120.0, num_predict=4)
+        elif provider == "openai_compat":
+            await _openai_chat(msgs, timeout=10.0)
+        else:
+            await _gemini_client().aio.models.generate_content(
+                model=model_for("gemini"), contents="Reply with the single word OK.", config=_gemini_config(temperature=0.0))
+
     for attempt in range(WARM_UP_ATTEMPTS):
         t0 = time.perf_counter()
         try:
-            if provider == "ollama":
-                await _ollama_chat(msgs, timeout=120.0, num_predict=4)
-            elif provider == "openai_compat":
-                await _openai_chat(msgs, timeout=10.0)
-            else:
-                await _gemini_client().aio.models.generate_content(
-                    model=model_for("gemini"), contents="Reply with the single word OK.", config=_gemini_config(temperature=0.0))
+            await asyncio.wait_for(ping(), timeout=120.0 if provider == "ollama" else 20.0)
             state, error = "ready", None
             latency = round((time.perf_counter() - t0) * 1000)
             break
         except Exception as exc:
-            error = f"{type(exc).__name__}: {str(exc)[:160]}"
+            state, error = classify_error(exc, provider)
             if not _transient(exc) or attempt == WARM_UP_ATTEMPTS - 1:
                 break
             await asyncio.sleep(2 * (attempt + 1))
