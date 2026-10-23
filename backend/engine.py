@@ -3,6 +3,7 @@ tracks metrics for both, runs investigations and red-team experiments."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import pickle
@@ -24,7 +25,10 @@ TICK_S = 0.25
 BASE_PER_TICK = 2
 ATTACK_SIZE = 60
 PRE_INVESTIGATE = 8
+PRE_LANGS = ("en", "ta", "hi")
 CACHE_PATH = os.path.join(DATA_DIR, "investigation_cache.json")
+SCAN_CACHE_PATH = os.path.join(DATA_DIR, "scan_cache.json")
+SAMPLE_IMAGE = os.path.join(ROOT, "docs", "sample-scam-sms.png")
 
 
 def load_dataset(seed: int):
@@ -101,7 +105,9 @@ class Engine:
         self.inv_queue: asyncio.Queue | None = None
         self.pending: dict[tuple[str, str], float] = {}
         self.pre_records: dict[str, dict] = {}
-        self.cache = self._load_cache()
+        self.cache = self._load_json(CACHE_PATH)
+        self.scan_cache = self._load_json(SCAN_CACHE_PATH)
+        self.prewarm = {"state": "idle", "done": 0, "total": 0}
         self.safe_mode = False
         self.reset()
 
@@ -254,17 +260,44 @@ class Engine:
                 "get_risk_factors": self.tool_risk_factors}
 
     # ---------- investigations ----------
-    def _load_cache(self) -> dict:
+    @staticmethod
+    def _load_json(path: str) -> dict:
         try:
-            with open(CACHE_PATH, encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
         except (OSError, ValueError):
             return {}
 
-    def _save_cache(self):
+    @staticmethod
+    def _save_json(path: str, data: dict):
         os.makedirs(DATA_DIR, exist_ok=True)
-        with open(CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(self.cache, f, ensure_ascii=False)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+
+    def _save_cache(self):
+        self._save_json(CACHE_PATH, self.cache)
+
+    # ---------- screenshot scan cache ----------
+    @staticmethod
+    def image_key(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    def scan_replay(self, data: bytes, lang: str) -> dict | None:
+        prefix = f"{self.image_key(data)}|{lang}|"
+        for key, result in self.scan_cache.items():
+            if key.startswith(prefix):
+                return {**result, "replayed": True, "label": f"{result['label']} · replayed from cache"}
+        return None
+
+    def scan_store(self, data: bytes, lang: str, result: dict):
+        self.scan_cache[f"{self.image_key(data)}|{lang}|{result['provider']}"] = result
+        self._save_json(SCAN_CACHE_PATH, self.scan_cache)
+
+    def note_provider_failure(self, state: str | None, message: str | None):
+        if state:
+            self.llm_status.update(state=state, error=message)
 
     def _cached(self, txn_id: str, lang: str) -> dict | None:
         key = (txn_id, lang)
@@ -287,7 +320,7 @@ class Engine:
         return None
 
     def cached_count(self) -> int:
-        return len(self.cache)
+        return len(self.cache) + len(self.scan_cache)
 
     def request_investigation(self, txn_id: str, lang: str) -> dict | None:
         """Returns a finished result or a pending status. Never waits on the model."""
@@ -330,7 +363,9 @@ class Engine:
             self.cache[f"{rec['txn_id']}|{lang}|{result['provider']}"] = result
             self._save_cache()
         elif result["error"] == "no model provider reachable":
-            self.llm_status.update(provider=None, model=None, mode=None, state="offline")
+            self.llm_status.update(provider=None, model=None, mode=None, state="offline", error=result["error"])
+        else:
+            self.note_provider_failure(result.get("provider_state"), result["error"])
         return result
 
     async def worker(self):
@@ -350,22 +385,35 @@ class Engine:
                                       "status": self.llm_status})
             self.pending.pop((txn_id, lang), None)
 
+    def first_flagged(self) -> list[int]:
+        p = self.base_scorer.predict(self.stream_df.iloc[:5000])
+        return [i for i in range(len(p)) if p[i] >= policy.THRESHOLDS["hold"]][:PRE_INVESTIGATE]
+
     async def pre_investigate(self):
-        """Investigate the first flagged payments of the seeded stream ahead of time, cached on disk."""
+        """Cache real model output, ahead of a demo, for the first flagged payments of the seeded stream
+        in every language and for the sample scam screenshot."""
         if not self.llm_status.get("provider") or self.llm_status["state"] != "ready":
             return
         provider = self.llm_status["provider"]
-        p = self.base_scorer.predict(self.stream_df.iloc[:5000])
-        idx = [i for i in range(len(p)) if p[i] >= policy.THRESHOLDS["hold"]][:PRE_INVESTIGATE]
-        for i in idx:
-            row = self.stream_rows[i]
-            if f"{row['txn_id']}|en|{provider}" in self.cache:
-                continue
-            rec = self._score(row, self.stream_X[i])
+        jobs = [(i, lang) for i in self.first_flagged() for lang in PRE_LANGS
+                if f"{self.stream_rows[i]['txn_id']}|{lang}|{provider}" not in self.cache]
+        sample = open(SAMPLE_IMAGE, "rb").read() if os.path.exists(SAMPLE_IMAGE) else None
+        scans = [lang for lang in PRE_LANGS if sample and f"{self.image_key(sample)}|{lang}|{provider}" not in self.scan_cache]
+        self.prewarm = {"state": "running", "done": 0, "total": len(jobs) + len(scans)}
+        for i, lang in jobs:
+            rec = self.pre_records.get(self.stream_rows[i]["txn_id"]) or self._score(self.stream_rows[i], self.stream_X[i])
             self.pre_records[rec["txn_id"]] = rec
             while not self.inv_queue.empty() or self.pending:
                 await asyncio.sleep(1)
-            await self._investigate_now(rec, "en")
+            await self._investigate_now(rec, lang)
+            self.prewarm["done"] += 1
+        for lang in scans:
+            try:
+                self.scan_store(sample, lang, await investigator.scan_image(sample, "image/png", lang))
+            except Exception as exc:
+                self.note_provider_failure(*investigator.classify_error(exc, provider))
+            self.prewarm["done"] += 1
+        self.prewarm["state"] = "done"
 
     # ---------- graph ----------
     def _graph_cache(self):

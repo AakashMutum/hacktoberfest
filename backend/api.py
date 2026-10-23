@@ -70,7 +70,8 @@ class Control(BaseModel):
 @app.get("/api/health")
 def health():
     return {"ok": True, "llm": engine.llm_status, "llm_available": engine.llm_status["state"] == "ready",
-            "seed": engine.seed, "safe_mode": engine.safe_mode, "cached_results": engine.cached_count(), "rules": {"simple": rules.describe("simple"), "tight": rules.describe("tight")},
+            "seed": engine.seed, "safe_mode": engine.safe_mode, "cached_results": engine.cached_count(),
+            "prewarm": engine.prewarm, "rules": {"simple": rules.describe("simple"), "tight": rules.describe("tight")},
             "thresholds": policy.THRESHOLDS, "hold_minutes": policy.HOLD_MINUTES}
 
 
@@ -150,18 +151,31 @@ def graph(txn_id: str):
 async def scan_screenshot(file: UploadFile = File(...), lang: str = Form("en")):
     if file.content_type not in ("image/png", "image/jpeg", "image/webp"):
         raise HTTPException(415, "upload a PNG, JPEG or WebP image")
-    if await investigator.resolve_provider() is None:
-        raise HTTPException(503, "Scan unavailable: no model provider is configured")
+    if lang not in policy.LANGS:
+        lang = "en"
     data = await file.read(MAX_IMAGE_BYTES + 1)
     if len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(413, "image larger than 6 MB")
+    cached = engine.scan_replay(data, lang)
+    if engine.safe_mode:
+        if cached:
+            return cached
+        raise HTTPException(503, "Safe mode: no cached model reading for this image")
+    provider = await investigator.resolve_provider()
+    if provider is None:
+        if cached:
+            return cached
+        raise HTTPException(503, "Scan unavailable: no model provider is configured")
     try:
-        return await investigator.scan_image(data, file.content_type, lang)
-    except asyncio.TimeoutError:
-        raise HTTPException(504, "Gemma did not answer in time")
-    except Exception:
-        log.exception("screenshot scan failed")
-        raise HTTPException(503, "Scan unavailable: the model could not read this image")
+        result = await investigator.scan_image(data, file.content_type, lang)
+    except Exception as exc:
+        state, message = investigator.classify_error(exc, provider)
+        engine.note_provider_failure(state, message)
+        if cached:
+            return cached
+        raise HTTPException(504 if state == "slow" else 503, f"Scan unavailable: {message}")
+    engine.scan_store(data, lang, result)
+    return result
 
 
 @app.post("/api/redteam/attack")
