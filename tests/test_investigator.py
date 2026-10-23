@@ -19,8 +19,10 @@ def run(coro):
 @pytest.fixture(autouse=True)
 def reset_tools():
     inv._no_tools.clear()
+    inv._tool_failures.clear()
     yield
     inv._no_tools.clear()
+    inv._tool_failures.clear()
 
 
 def test_no_provider_gives_labelled_template():
@@ -59,6 +61,9 @@ def test_tool_rejection_switches_to_context_injection(monkeypatch):
     r = run(inv.investigate(TXN, "en", TOOLS, provider="gemini"))
     assert r["mode"] == "context_injection"
     assert r["label"] == "Gemma 4 26B · Gemini API · context injection"
+    assert "tools not supported" in r["mode_note"]
+    assert "gemini" not in inv._no_tools
+    run(inv.investigate(TXN, "en", TOOLS, provider="gemini"))
     assert "gemini" in inv._no_tools
 
 
@@ -106,3 +111,19 @@ def test_safe_mode_never_queues(engine):
     finally:
         engine.safe_mode = False
         engine.reset()
+
+
+def test_transient_server_error_does_not_disable_tools(monkeypatch):
+    class ServerError(Exception):
+        code = 500
+
+    async def fc(*a):
+        raise ServerError("internal")
+
+    async def ci(provider, txn, lang, tools):
+        return dict(ANSWER)
+    monkeypatch.setattr(inv, "_function_calling", fc)
+    monkeypatch.setattr(inv, "_context_injection", ci)
+    r = run(inv.investigate(TXN, "en", TOOLS, provider="gemini"))
+    assert r["mode"] == "context_injection"
+    assert "gemini" not in inv._no_tools

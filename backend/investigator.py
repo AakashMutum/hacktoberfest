@@ -126,8 +126,10 @@ async def resolve_provider() -> str | None:
     return None
 
 
-# Providers that rejected native tools once go straight to context injection.
+# Providers whose tool calls failed twice in a row go straight to context injection.
 _no_tools: set[str] = set()
+_tool_failures: dict[str, int] = {}
+TOOL_FAILURE_LIMIT = 2
 
 
 # ---------- prompts and validation ----------
@@ -335,6 +337,11 @@ async def _context_injection(provider: str, txn: dict, lang: str, tools: dict) -
     return parse_answer(msg.get("content") or "")
 
 
+def _transient(exc: Exception) -> bool:
+    code = getattr(exc, "code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    return isinstance(code, int) and (code >= 500 or code == 429)
+
+
 async def investigate(txn: dict, lang: str, tools: dict[str, Callable], provider: str | None = None) -> dict:
     """Never raises. Returns a model result with provenance, or the labelled template fallback."""
     lang = lang if lang in LANG_NAMES else "en"
@@ -343,21 +350,28 @@ async def investigate(txn: dict, lang: str, tools: dict[str, Callable], provider
         return fallback(txn, lang, "no model provider reachable")
     started = time.perf_counter()
     deadline = timeout_for(provider)
+    mode_note = None if provider not in _no_tools else "tool calling disabled after repeated failures"
     if provider not in _no_tools:
         try:
             answer, log = await asyncio.wait_for(_function_calling(provider, txn, lang, tools), timeout=deadline)
+            _tool_failures[provider] = 0
             return _finish(answer, txn, lang, provider, "function_calling", started, log)
         except asyncio.TimeoutError:
             return fallback(txn, lang, f"{provider} timed out after {deadline:.0f}s")
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             return fallback(txn, lang, f"{provider} unreachable: {type(exc).__name__}")
-        except Exception:
-            # Tools rejected or malformed output: use context injection from now on.
-            _no_tools.add(provider)
+        except Exception as exc:
+            # Tools rejected (4xx) or malformed calls twice in a row: context injection from now on.
+            # A transient server error only falls back for this call.
+            mode_note = f"function calling failed: {type(exc).__name__}: {str(exc)[:120]}"
+            if not _transient(exc):
+                _tool_failures[provider] = _tool_failures.get(provider, 0) + 1
+                if _tool_failures[provider] >= TOOL_FAILURE_LIMIT:
+                    _no_tools.add(provider)
     remaining = max(1.0, deadline - (time.perf_counter() - started))
     try:
         answer = await asyncio.wait_for(_context_injection(provider, txn, lang, tools), timeout=remaining)
-        return _finish(answer, txn, lang, provider, "context_injection", started, [])
+        return {**_finish(answer, txn, lang, provider, "context_injection", started, []), "mode_note": mode_note}
     except asyncio.TimeoutError:
         return fallback(txn, lang, f"{provider} timed out after {deadline:.0f}s")
     except Exception as exc:
